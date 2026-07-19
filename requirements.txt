@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# 42 Pacman - baseline dependencies
+#
+# Install everything (including the local wheel) with:
+#     pip install -r requirements.txt
+# The Makefile "install" rule should run exactly that command.
+# ---------------------------------------------------------------------------
+
+# The assigned A-Maze-ing generator (subject V.4). Referenced as a local wheel
+# path; pip resolves it relative to this file's directory. Never vendor or
+# modify its code -- it is re-installed as-is during peer review.
+./mazegenerator-2.1.0-py3-none-any.whl
+
+# Graphics. The subject mandates "MLX or similar": every function you call
+# must have an MLX equivalent (window, images/pixels, keyboard hooks, loop).
+# pygame is the conventional Python choice satisfying that constraint.
+pygame>=2.5
+
+# Mandatory linting (subject III.1 / Makefile "lint" rule).
+flake8>=7.0
+mypy>=1.10
+
+# Test framework (subject III.3 -- tests required but not submitted/graded).
+pytest>=8.0
