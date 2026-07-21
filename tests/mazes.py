@@ -43,6 +43,47 @@ POCKET_4x1 = [
     [13, 5, 5, 7],
 ]
 
+# One-row, five-column straight tube -- the tile-swap collision fixture
+# (playbook §5.1/§5.4: every S-row scenario is scripted on these five
+# cells (0,0)..(4,0)).
+CORRIDOR_1x5 = [
+    [13, 5, 5, 5, 7],
+]
+
+# T-junction: horizontal corridor along y=1 with one arm going North
+# from the center -- the degree-3 intersection for the buffered-turn
+# scripted tests (playbook §3.1): press Up early while moving East and
+# the turn must fire exactly at (1,1), where North first opens.
+TEE_3x3 = [
+    [15, 11, 15],
+    [13, 4, 7],
+    [15, 15, 15],
+]
+
+
+def assert_legal_path(
+    adapter: MazeAdapter,
+    path: list[tuple[int, int]],
+    start: tuple[int, int],
+    goal: tuple[int, int],
+) -> None:
+    """Assert ``path`` starts/ends right and every hop is a legal move.
+
+    Shared by the micro, oracle and benchmark pathfinding suites.
+    Legality is checked through the same public vocabulary the search
+    algorithms consume (``adapter.neighbors``), so a passing path is
+    legal by the maze's own definition. The no-revisit assert holds for
+    every search here because paths are read off a parent TREE
+    (REFERENCE.md §3.2) -- a duplicate would flag real corruption.
+    """
+    assert path[0] == start
+    assert path[-1] == goal
+    for cell, following in zip(path, path[1:]):
+        assert following in adapter.neighbors(*cell), (
+            f"illegal hop {cell} -> {following}"
+        )
+    assert len(set(path)) == len(path), "path revisits a cell"
+
 
 def make_adapter(grid: list[list[int]]) -> MazeAdapter:
     """Loaded MazeAdapter over a hand-authored grid, no wheel involved.

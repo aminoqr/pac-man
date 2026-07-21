@@ -13,12 +13,25 @@ fun (REFERENCE.md §4.5).
 Between tiles a ghost is committed to its direction (REFERENCE.md §1.1,
 degree-2 cells are corridors): the engine only calls these functions at
 tile centers, which is what makes ghost AI cheap.
+
+Gameplay movement uses the path-based ``choose_target_exit`` instead
+(and ``choose_eaten_exit`` for EATEN eyes): the greedy rule's wall-blind
+myopia is arcade-faithful on hand-designed boards, but this project's
+braided wheel mazes are full of micro-loops that trap a greedy ghost
+orbiting a wall forever (it visibly "spins in place"). Navigating by
+true graph distance -- the Milestone 3 upgrade REFERENCE.md §3.7
+anticipates -- keeps the four personalities (they still pursue distinct
+*target tiles*) while making the ghosts actually roam and hunt.
+``choose_exit`` remains the documented greedy primitive (still used by
+its unit tests and as the total-safety fallback); see the
+project-management design-decisions note.
 """
 
 from random import Random
 
 from pacman.ai.ghost import Cell
 from pacman.maze.adapter import Direction, MazeAdapter
+from pacman.pathfinding.search import astar_path
 
 # Up > Left > Down > Right (TESTING_PLAYBOOK.md §4.3): fixed so every
 # tie resolves identically on every run -- determinism is a feature.
@@ -96,6 +109,70 @@ def choose_frightened_exit(
     return rng.choice(exits)
 
 
+def choose_target_exit(
+    adapter: MazeAdapter,
+    cell: Cell,
+    current_direction: Direction,
+    target: Cell,
+) -> Direction:
+    """First hop of a true shortest path toward ``target`` (SCATTER/CHASE).
+
+    The Milestone-3 upgrade the design anticipated (REFERENCE.md §3.7):
+    the wall-blind greedy rule (``choose_exit``) gets trapped in local
+    minima on braided wheel mazes -- their many micro-loops let a ghost
+    orbit a wall forever while straight-line distance never improves --
+    so ghosts navigate by real graph distance instead. The target may
+    be a phantom tile (outside the maze, or inside a wall -- targets are
+    never clamped, REFERENCE.md §4.4), so it is first resolved to the
+    nearest walkable anchor; A* then gives the next hop, which strictly
+    decreases true path distance every re-decision, so no orbiting.
+
+    Personalities are unchanged: each ghost still pursues its own target
+    tile (Blinky the player, Pinky 4-ahead, ...) -- only the *how* of
+    getting there is now path-optimal. Like the EATEN eyes it may
+    reverse (a chaser doubling back toward the player is correct), and
+    it falls back to the greedy rule if no path exists, staying total.
+    """
+    anchor = adapter.nearest_walkable(*target)
+    result = astar_path(adapter, cell, anchor)
+    if result.path is None or len(result.path) < 2:
+        return choose_exit(adapter, cell, current_direction, target)
+    next_cell = result.path[1]
+    return _DELTA_TO_DIRECTION[
+        (next_cell[0] - cell[0], next_cell[1] - cell[1])
+    ]
+
+
+def choose_eaten_exit(
+    adapter: MazeAdapter,
+    cell: Cell,
+    current_direction: Direction,
+    home: Cell,
+) -> Direction:
+    """First hop of a true shortest path home, for EATEN eyes.
+
+    The Milestone 3 gameplay wiring (PLAN.md): eyes follow
+    ``astar_path`` -- REFERENCE.md §3.6 pins "eaten ghost going home"
+    as A*'s best use -- instead of the greedy rule, because greedy
+    straight-line scoring plus no-reverse can orbit the "42" block
+    indefinitely, while the shortest-path hop strictly decreases TRUE
+    path distance every re-decision: arrival in exactly d(cell, home)
+    moves, guaranteed. Two deliberate rule changes for eyes: they may
+    reverse (the hop home can point backward; ``current_direction`` is
+    unused on the happy path), and they never wander. Falls back to
+    the shared greedy rule -- staying total -- when already home or
+    when home is unreachable (a sealed cell; cannot happen on a
+    braided wheel maze).
+    """
+    result = astar_path(adapter, cell, home)
+    if result.path is None or len(result.path) < 2:
+        return choose_exit(adapter, cell, current_direction, home)
+    next_cell = result.path[1]
+    return _DELTA_TO_DIRECTION[
+        (next_cell[0] - cell[0], next_cell[1] - cell[1])
+    ]
+
+
 def _squared_distance_after(
     cell: Cell, direction: Direction, target: Cell,
 ) -> int:
@@ -103,3 +180,10 @@ def _squared_distance_after(
     next_x = cell[0] + direction.dx
     next_y = cell[1] + direction.dy
     return (next_x - target[0]) ** 2 + (next_y - target[1]) ** 2
+
+
+# A* returns cells; ghosts speak Directions. Adjacent-hop deltas map
+# 1:1 onto the canonical enum (REFERENCE.md §1.4).
+_DELTA_TO_DIRECTION: dict[Cell, Direction] = {
+    (d.dx, d.dy): d for d in Direction
+}

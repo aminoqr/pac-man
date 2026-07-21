@@ -46,17 +46,24 @@ class GhostPersonality(Enum):
 class Ghost:
     """One ghost's mutable AI state.
 
-    ``home_corner`` triples as scatter target, EATEN destination, and
-    respawn point (PLAN.md §2.3: scatter targets are the spawn corners).
-    ``respawn_ticks_remaining`` is ``None`` except while EATEN and
-    parked at ``home_corner`` waiting to rejoin play; see
-    ``tick_eaten_state``.
+    ``home_corner`` is the EATEN destination and respawn point (the
+    ghost's actual spawn cell). ``scatter_target`` is a point *outside*
+    the maze beyond that corner: aiming a wall-blind ghost at an
+    unreachable outside tile makes it patrol a wide loop hugging the
+    outer walls during SCATTER instead of jittering on the corner it is
+    already standing on (the classic arcade behaviour, REFERENCE.md
+    §4.4). It defaults to ``None`` (fall back to ``home_corner``) so
+    hand-built test ghosts need not supply one; ``create_ghosts`` sets
+    the real outside targets for gameplay. ``respawn_ticks_remaining``
+    is ``None`` except while EATEN and parked at ``home_corner`` waiting
+    to rejoin play; see ``tick_eaten_state``.
     """
 
     personality: GhostPersonality
     cell: Cell
     direction: Direction
     home_corner: Cell
+    scatter_target: Cell | None = None
     mode: GhostMode = GhostMode.SCATTER
     respawn_ticks_remaining: int | None = None
 
@@ -88,10 +95,12 @@ class Ghost:
     ) -> None:
         """Advance EATEN bookkeeping one tick (TESTING_PLAYBOOK.md G8/G9).
 
-        Call once per tick while EATEN; movement toward ``home_corner``
-        itself is the caller's job via the same shared intersection rule
-        as everyone else (targeting.py already returns ``home_corner``
-        for EATEN ghosts). On arrival the respawn countdown starts; it
+        Call once per tick while EATEN; movement toward
+        ``home_corner`` itself is the caller's job via
+        ``intersection.choose_eaten_exit`` -- the true shortest-path
+        hop home wired in by Milestone 3 (targeting.py still reports
+        ``home_corner`` as the EATEN target). On arrival the respawn
+        countdown starts; it
         decrements on each subsequent call, and when it hits zero the
         ghost rejoins ``wave_mode`` -- whatever SCATTER/CHASE phase the
         wave clock is in *now*, not the mode it left (G9). Pinned
@@ -113,6 +122,26 @@ class Ghost:
             self.respawn_ticks_remaining = None
 
 
+# How far beyond each corner the scatter target sits. Any positive
+# margin works (the point only has to be unreachable and "pull" toward
+# the corner); a few tiles keeps the patrol loop hugging that quadrant.
+SCATTER_MARGIN = 4
+
+
+def _outside_target(corner: Cell, center: Cell) -> Cell:
+    """A point ``SCATTER_MARGIN`` tiles beyond ``corner``, away from center.
+
+    Extrapolating outward from the 4-corner centroid gives an
+    off-the-maze tile diagonally past the corner, robust to a corner
+    that was nudged inward by ``MazeAdapter`` (a sealed literal corner).
+    The greedy rule can never arrive there, so the ghost orbits the
+    corner region instead of the corner cell.
+    """
+    dx = 1 if corner[0] >= center[0] else -1
+    dy = 1 if corner[1] >= center[1] else -1
+    return (corner[0] + dx * SCATTER_MARGIN, corner[1] + dy * SCATTER_MARGIN)
+
+
 def create_ghosts(corners: list[Cell]) -> list[Ghost]:
     """Build the four ghosts on their classic corners (subject VI.1).
 
@@ -122,16 +151,32 @@ def create_ghosts(corners: list[Cell]) -> list[Ghost]:
     bottom-left. Initial directions face inward horizontally -- always
     physically open on a wheel maze, whose braided corners keep both
     non-border sides carved.
+
+    Each ghost's SCATTER target is set to a tile just *outside* the maze
+    beyond its corner (``_outside_target``) so it patrols its quadrant
+    rather than jittering on its spawn cell; ``home_corner`` stays the
+    real spawn/respawn cell used by EATEN eyes.
     """
     top_left, top_right, bottom_left, bottom_right = corners
+    cx = sum(c[0] for c in corners) // len(corners)
+    cy = sum(c[1] for c in corners) // len(corners)
+    center = (cx, cy)
     return [
-        Ghost(GhostPersonality.BLINKY, top_right, Direction.WEST, top_right),
-        Ghost(GhostPersonality.PINKY, top_left, Direction.EAST, top_left),
+        Ghost(
+            GhostPersonality.BLINKY, top_right, Direction.WEST, top_right,
+            scatter_target=_outside_target(top_right, center),
+        ),
+        Ghost(
+            GhostPersonality.PINKY, top_left, Direction.EAST, top_left,
+            scatter_target=_outside_target(top_left, center),
+        ),
         Ghost(
             GhostPersonality.INKY, bottom_right, Direction.WEST, bottom_right,
+            scatter_target=_outside_target(bottom_right, center),
         ),
         Ghost(
             GhostPersonality.CLYDE, bottom_left, Direction.EAST, bottom_left,
+            scatter_target=_outside_target(bottom_left, center),
         ),
     ]
 

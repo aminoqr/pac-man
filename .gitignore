@@ -3,6 +3,11 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .venv/
+dist/
+
+# Runtime / scratch artifacts
+highscores.json
+scratch_subject.txt
 
 # Editor artifacts
 .vscode/

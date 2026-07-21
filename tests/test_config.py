@@ -92,6 +92,27 @@ def test_invalid_json_falls_back_to_defaults(
     assert any("not valid JSON" in message for message in caplog.messages)
 
 
+def test_binary_garbage_config_falls_back_to_defaults(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A binary/invalid-UTF-8 config must boot on defaults, not crash.
+
+    Regression: reading such a file raises UnicodeDecodeError (a
+    ValueError, not an OSError), which slipped past the read guard and
+    crashed the game -- the exact adversarial input a defense probes
+    (subject V.3, "no traceback").
+    """
+    path = str(tmp_path / "config.json")
+    with open(path, "wb") as handle:
+        handle.write(b"\xff\xfe not \x80\x81 utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        config = load_config(path)
+
+    assert config.lives == DEFAULT_LIVES
+    assert config.seed == DEFAULT_SEED
+
+
 def test_non_object_json_root_falls_back_to_defaults(tmp_path: Path) -> None:
     path = write_config(tmp_path, json.dumps([1, 2, 3]))
 

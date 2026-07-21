@@ -65,7 +65,9 @@ def strip_json_comments(text: str) -> str:
     return "\n".join(kept_lines)
 
 
-def _get_int(raw: dict, key: str, default: int, minimum: int = 0) -> int:
+def _get_int(
+    raw: dict[str, object], key: str, default: int, minimum: int = 0,
+) -> int:
     """Read an int config field, clamping to ``default`` if missing/invalid."""
     if key not in raw:
         logger.warning("Config missing %r; using default %r.", key, default)
@@ -86,7 +88,7 @@ def _get_int(raw: dict, key: str, default: int, minimum: int = 0) -> int:
     return value
 
 
-def _get_str(raw: dict, key: str, default: str) -> str:
+def _get_str(raw: dict[str, object], key: str, default: str) -> str:
     """Read a non-empty str field, clamping to ``default`` if invalid."""
     if key not in raw:
         logger.warning("Config missing %r; using default %r.", key, default)
@@ -101,7 +103,7 @@ def _get_str(raw: dict, key: str, default: str) -> str:
     return value
 
 
-def _get_levels(raw: dict) -> list[LevelConfig]:
+def _get_levels(raw: dict[str, object]) -> list[LevelConfig]:
     """Read the ``level`` array, defaulting/clamping each entry on its own."""
     fallback = [LevelConfig(DEFAULT_LEVEL_WIDTH, DEFAULT_LEVEL_HEIGHT)]
     if "level" not in raw:
@@ -147,11 +149,15 @@ def load_config(path: str) -> Config:
     ints; the wheel-specific asymmetric minimum size for the "42" logo insert
     is the maze adapter's concern (PLAN.md Milestone 1.3), not this loader's.
     """
-    raw: dict = {}
+    raw: dict[str, object] = {}
     try:
         with open(path, "r", encoding="utf-8") as config_file:
             text = config_file.read()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError (a binary/invalid-UTF-8 config file) is a
+        # ValueError, not an OSError, so it must be caught explicitly --
+        # otherwise an adversarial config crashes the game instead of
+        # falling back to defaults (subject V.3, "no traceback").
         logger.warning(
             "Could not read config file %r (%s); using all defaults.",
             path, exc,
