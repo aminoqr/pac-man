@@ -9,11 +9,15 @@ action/char translation used by the MLX front-end.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pacman.highscore.store import HighscoreTable
 from pacman.maze.adapter import Direction
 from pacman.ui.shell import MS_PER_TICK, Action, GameShell, Screen
 from tests.engine_helpers import make_test_config
+
+if TYPE_CHECKING:  # annotation only -- keep the mlx import lazy at runtime
+    from pacman.ui.app import MlxApp
 
 
 def _shell(tmp_path: Path) -> GameShell:
@@ -166,3 +170,68 @@ def test_keysym_translation_maps_navigation_and_typing() -> None:
     assert keysym_to_action(0x20) == (Action.CONFIRM, " ")   # Space
     assert keysym_to_action(0x35) == (None, "5")             # digit 5
     assert keysym_to_action(0x41) == (None, "A")             # uppercase A
+
+
+def _blank_app() -> "MlxApp":
+    """An MlxApp with a real-sized pixel buffer and no window.
+
+    Full size because ``_rect`` clips against the module's WIDTH/HEIGHT
+    rather than the buffer it was handed -- a smaller buffer would be
+    written past its end.
+    """
+    from pacman.ui import app as appmod
+
+    app = appmod.MlxApp.__new__(appmod.MlxApp)
+    app.buffer = memoryview(bytearray(appmod.WIDTH * appmod.HEIGHT * 4))
+    app.size_line = appmod.WIDTH * 4
+    return app
+
+
+def test_direction_arrow_rasterises_a_triangle() -> None:
+    """The heading/queued markers have no polygon primitive behind them,
+    so verify the actual pixels: each step back from the apex widens the
+    slab by one pixel either side."""
+    from pacman.ui import app as appmod
+
+    app = _blank_app()
+    buffer = app.buffer
+    assert buffer is not None
+
+    def lit(row: int) -> int:
+        return sum(
+            1 for x in range(appmod.WIDTH)
+            if buffer[row * app.size_line + x * 4 + 2]  # red channel
+        )
+
+    app._arrow(100, 40, Direction.NORTH, 4, appmod.PLAYER)
+    assert [lit(40 + i) for i in range(4)] == [1, 3, 5, 7]
+    assert lit(39) == 0  # nothing spills past the apex
+
+
+def test_queued_turn_is_drawn_only_while_an_input_is_pending() -> None:
+    """A buffered 90-degree turn shows a marker in its own colour, so a
+    press that cannot fire until the next tile center is still visibly
+    acknowledged. Nothing is drawn once the buffer clears."""
+    from pacman.ui import app as appmod
+    from tests.engine_helpers import make_state
+    from tests.mazes import PLAZA_3x3
+
+    state = make_state(PLAZA_3x3, player=(1, 1))
+    state.player_direction = Direction.EAST
+
+    def intent_pixels() -> int:
+        app = _blank_app()
+        app._draw_player_heading(state, 1.0, 1.0, 48, 0, 0, 16)
+        buffer = app.buffer
+        assert buffer is not None
+        packed = bytes((INTENT_B, INTENT_G, INTENT_R, 255))
+        return bytes(buffer).count(packed)
+
+    INTENT_R, INTENT_G, INTENT_B = appmod.INTENT
+    assert intent_pixels() == 0  # nothing queued
+
+    state.buffer_input(Direction.NORTH)
+    assert intent_pixels() > 0  # pending turn is shown
+
+    state.buffer_input(Direction.EAST)  # same as facing -> not a turn
+    assert intent_pixels() == 0

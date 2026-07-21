@@ -151,7 +151,9 @@ def test_x3_co_located_frightened_ghost_is_eaten() -> None:
         CORRIDOR_1x5, player=(1, 0), ghosts=[ghost], pacgums={(0, 0)},
     )
     state.player_direction = Direction.EAST
-    state.tick_count = 1  # even tick: the frightened ghost steps too
+    # Frightened ghosts take two ticks a tile; start this one half-way
+    # so it completes its step on the same tick the player does.
+    ghost.move_ticks = 1
     update_game_state(state)
     assert state.player_cell == (2, 0) and ghost.cell == (2, 0)
     assert ghost.mode is GhostMode.EATEN

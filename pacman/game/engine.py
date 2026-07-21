@@ -44,7 +44,7 @@ from pacman.ai.ghost import (
     GhostMode,
     GhostPersonality,
     create_ghosts,
-    ghost_moves_on_tick,
+    mode_speed_multiplier,
 )
 from pacman.ai.intersection import (
     choose_eaten_exit,
@@ -70,16 +70,30 @@ from pacman.pathfinding.search import reachable_cells
 # changing it re-times movement WITHOUT altering any wall-clock duration
 # (level time, frightened, respawn all stay the same number of seconds).
 # It also sets turn responsiveness: the player only changes direction at
-# a tile center, i.e. once per tick, so this many turns/second. 10 gives
-# a ~100 ms turn window -- nimble -- while the ghosts are slowed to a
-# fraction of it (``GameState.ghost_speed``) so the pace is not frantic,
-# and the UI's per-entity motion smoothing keeps everything gliding.
-ENGINE_TICKS_PER_SECOND = 10
+# a tile center, so this is also how often input is sampled.
+#
+# It runs at display rate ON PURPOSE. Entities carry sub-tile progress
+# (``player_move_ticks`` / ``Ghost.move_ticks``), so a tick is a small
+# fraction of a tile rather than a whole hop: the UI can draw the exact
+# committed position every frame with no interpolation, no extrapolation
+# and no lag. A slower sim would force the renderer to guess between
+# ticks, and guessing across a tile center is wrong precisely when a
+# buffered turn lands -- the sprite would cut a diagonal and snap back.
+#
+# Cost is unaffected: ghost AI and turn decisions fire once per TILE
+# (when the counter wraps), not once per tick, so only cheap counter
+# arithmetic runs at this rate. Per-second durations are all expressed
+# as multiples of this constant, so changing it re-times nothing.
+ENGINE_TICKS_PER_SECOND = 60
 
 # Frightened overlay length (REFERENCE.md §4.6 classic ~6 s) and the
 # eaten ghost's parked-at-home delay (subject VI.3: 5-10 s).
 FRIGHTENED_DURATION_TICKS = 6 * ENGINE_TICKS_PER_SECOND
 RESPAWN_DELAY_TICKS = 5 * ENGINE_TICKS_PER_SECOND
+
+# Longest a single tile may take, so a zero/negative configured speed
+# crawls instead of freezing an entity in place forever.
+_MAX_STEP_INTERVAL = 10 * ENGINE_TICKS_PER_SECOND
 
 # The arcade start facing; also restored on every respawn.
 PLAYER_START_DIRECTION = Direction.WEST
@@ -142,6 +156,7 @@ class GameState:
         score: int,
         rng: Random,
         ghost_speed: float = 1.0,
+        player_speed: float = 1.0,
     ) -> None:
         """Assemble a fresh level run carrying ``lives``/``score`` over.
 
@@ -149,19 +164,34 @@ class GameState:
         may adversarially say ``lives: 0`` -- subject V.3) rather than
         ticking a dead player.
 
-        ``ghost_speed`` is the fraction of the player's speed at which
+        ``ghost_speed`` is the fraction of the tick rate at which
         SCATTER/CHASE ghosts move (1.0 = every tick, the default kept by
         the whole test suite; the UI sets it lower so the nimble player
         can outmanoeuvre them -- the classic arcade balance). EATEN eyes
-        and FRIGHTENED ghosts keep their own cadences.
+        and FRIGHTENED ghosts keep their own cadences. ``player_speed``
+        is the same kind of fraction applied to the player's own
+        movement (default 1.0 = every tick, kept by the tests); the UI
+        sets it lower to slow Pac-Man down. The buffered turn is still
+        *checked* every tick and, on a genuine direction change, *fires
+        immediately* rather than waiting for the next throttled step (see
+        ``_move_player``), so turning stays crisp at any speed.
         """
         self.adapter = adapter
         self.level_data = level_data
         self.config = config
         self.ghost_speed = ghost_speed
+        self.player_speed = player_speed
         self.player_cell: Cell = level_data.player_spawn
         self.player_direction = PLAYER_START_DIRECTION
         self.buffered_direction: Direction | None = None
+        # Ticks travelled from ``player_cell`` toward the next tile along
+        # ``player_direction``, out of ``_step_interval(player_speed)``.
+        # The player's position is CONTINUOUS: this is real state, not a
+        # rendering artifact, which is what lets the UI draw exactly
+        # where the player is instead of lagging a whole step behind it
+        # (see ``player_render_pos``). 0 means "on a tile center", the
+        # only place a turn may be taken.
+        self.player_move_ticks = 0
         self.lives = lives
         self.score = score
         self.ghosts = create_ghosts(level_data.ghost_spawns)
@@ -198,6 +228,68 @@ class GameState:
     def add_life(self) -> None:
         """Cheat: grant one extra life (subject VI.5)."""
         self.lives += 1
+
+    @property
+    def player_tile(self) -> Cell:
+        """The tile the player is physically OVER (nearest center).
+
+        ``player_cell`` is the traversal anchor -- the tile progress is
+        measured away from -- which after a mid-tile reversal is the tile
+        ahead even while the player is still nearer the one behind. Every
+        question about *occupancy* (pellets, collisions, what the ghosts
+        chase) must be asked here instead, or the player would collect
+        pellets never reached and die to ghosts never touched.
+
+        Integer comparison, so the halfway case is decided exactly rather
+        than by float rounding. At the default speed the counter is
+        always 0 at a tick boundary, making this the anchor itself.
+        """
+        if self.player_move_ticks * 2 < _step_interval(self.player_speed):
+            return self.player_cell
+        step = self.player_direction
+        return (self.player_cell[0] + step.dx, self.player_cell[1] + step.dy)
+
+    def ghost_tile(self, ghost: Ghost) -> Cell:
+        """The tile a ghost is physically over -- see :attr:`player_tile`.
+
+        Ghosts are slower than the player, so they spend most of their
+        time mid-tile; reading the raw anchor would let a ghost drawn
+        nearly a tile away still register the touch that kills you.
+        """
+        if ghost.move_ticks * 2 < max(1, ghost.move_span):
+            return ghost.cell
+        step = ghost.direction
+        return (ghost.cell[0] + step.dx, ghost.cell[1] + step.dy)
+
+    def player_render_pos(self) -> tuple[float, float]:
+        """The player's exact position in tile units, for drawing.
+
+        Purely the COMMITTED sub-tile progress -- nothing is predicted,
+        so the sprite is always exactly where the collision check thinks
+        it is, and motion is always along one axis (direction can only
+        change at a tile center, where the fraction is 0). A player
+        stopped against a wall holds a fraction of 0 and so reports its
+        tile exactly, never drifting into the wall blocking it.
+        """
+        x, y = self.player_cell
+        step = self.player_direction
+        travel = self.player_move_ticks / _step_interval(self.player_speed)
+        return (x + step.dx * travel, y + step.dy * travel)
+
+    def ghost_render_pos(self, ghost: Ghost) -> tuple[float, float]:
+        """A ghost's exact position in tile units, for drawing.
+
+        The ghost counterpart of :meth:`player_render_pos`, and likewise
+        purely committed progress: the sprite stays exactly where the
+        collision check thinks it is, so a ghost never appears a tile
+        away from the player it just caught. A parked ghost (eyes waiting
+        out the respawn delay, or one sealed in) holds a fraction of 0
+        and so reports its tile unmoved.
+        """
+        x, y = ghost.cell
+        step = ghost.direction
+        travel = ghost.move_ticks / max(1, ghost.move_span)
+        return (x + step.dx * travel, y + step.dy * travel)
 
     @property
     def seconds_remaining(self) -> int:
@@ -249,13 +341,15 @@ def create_game_state(
     score: int,
     rng: Random,
     ghost_speed: float = 1.0,
+    player_speed: float = 1.0,
 ) -> GameState:
     """Build a ready-to-tick GameState for one loaded maze.
 
     The one-stop factory the session layer uses per level: placement
     via :func:`parse_grid_map`, then a GameState carrying the running
     ``lives``/``score`` (subject VI.7: both persist across levels) and
-    the ``ghost_speed`` balance (default 1.0; the UI passes it down).
+    the ``ghost_speed``/``player_speed`` balance (both default 1.0; the
+    UI passes them down).
     """
     return GameState(
         adapter=adapter,
@@ -265,6 +359,7 @@ def create_game_state(
         score=score,
         rng=rng,
         ghost_speed=ghost_speed,
+        player_speed=player_speed,
     )
 
 
@@ -295,8 +390,8 @@ def update_game_state(state: GameState) -> None:
     if state.status is not GameStatus.RUNNING or state.paused:
         return
     state.tick_count += 1
-    prev_player = state.player_cell
-    prev_ghost_cells = [ghost.cell for ghost in state.ghosts]
+    prev_player = state.player_tile
+    prev_ghost_cells = [state.ghost_tile(ghost) for ghost in state.ghosts]
 
     state.level_ticks_remaining -= 1
     if state.level_ticks_remaining <= 0:
@@ -314,23 +409,115 @@ def update_game_state(state: GameState) -> None:
     _consume_pellets(state)
 
 
-def _move_player(state: GameState) -> None:
-    """One player step under the buffered-turn policy (REFERENCE.md §2.3).
+def _step_interval(speed: float) -> int:
+    """Whole ticks to cross one tile at ``speed`` tiles per tick.
 
-    At the tile center: fire the buffered direction if legal (clearing
-    the buffer), else continue with the current direction, else stop.
+    An INTEGER count is what keeps sub-tile progress exact: a float
+    accumulator at a speed like 1/12 never lands cleanly on 1.0, so
+    steps would drift and stutter. Rendering divides by this same
+    integer, so the drawn position is an exact rational fraction of a
+    tile. Clamped to at least 1 (never skip a tile, which would tunnel
+    through a wall) and at most :data:`_MAX_STEP_INTERVAL`.
+    """
+    if speed >= 1.0:
+        return 1
+    if speed <= 0.0:
+        return _MAX_STEP_INTERVAL
+    return max(1, min(_MAX_STEP_INTERVAL, round(1.0 / speed)))
+
+
+def _reverse_player_in_place(state: GameState) -> None:
+    """Turn the player around mid-tile without moving it one pixel.
+
+    A reversal needs no intersection -- P8 lets the player turn around
+    anywhere in a corridor -- so it must NOT wait for the next tile
+    center the way a 90-degree turn has to. Waiting is what makes rapid
+    back-and-forth taps (spamming A/D or W/S to hold a spot) feel
+    dropped or late.
+
+    The pivot is EXACT: re-anchor onto the tile being entered and mirror
+    the travel, which leaves the rendered position algebraically
+    unchanged --
+
+        (C + d) + (-d)(I-m)/I  ==  C + d(m/I)
+
+    -- so no jump is visible however fast the taps come. Anchoring
+    forward is forced by the representation (progress only runs away
+    from the anchor), and it is why occupancy is asked of
+    :attr:`GameState.player_tile` rather than of the raw anchor: the
+    anchor can name the tile ahead while the player is still nearer the
+    one behind.
+    """
+    step = state.player_direction
+    state.player_cell = (
+        state.player_cell[0] + step.dx,
+        state.player_cell[1] + step.dy,
+    )
+    state.player_move_ticks = (
+        _step_interval(state.player_speed) - state.player_move_ticks
+    )
+    state.player_direction = step.opposite
+
+
+def _commit_player_facing(state: GameState) -> bool:
+    """Settle the player's facing at a tile center; False if walled in.
+
+    The buffered direction wins if legal there (and is consumed), else
+    the current facing carries on, else the player is blocked and stops.
     An unfired buffer is RETAINED (playbook P4/P5) so an early press
-    still fires at a later tile where it becomes legal. The player may
-    reverse instantly (pinned P8 policy -- the no-reverse rule is a
-    ghost rule).
+    still fires at a later tile where it becomes legal.
     """
     legal = state.adapter.get_valid_moves(*state.player_cell)
     buffered = state.buffered_direction
     if buffered is not None and buffered in legal:
         state.player_direction = buffered
         state.buffered_direction = None
-    elif state.player_direction not in legal:
+        return True
+    return state.player_direction in legal
+
+
+def _move_player(state: GameState) -> None:
+    """Advance the player continuously under the buffered-turn policy.
+
+    The player crosses a tile over ``_step_interval`` ticks rather than
+    hopping it whole, so the position is continuous. Two consequences,
+    both load-bearing for how the game FEELS:
+
+    * The UI draws the exact position (``player_render_pos``) instead of
+      interpolating toward a tile the engine already reached -- that
+      interpolation lagged a full move period behind the simulation and
+      smeared diagonally through corners on a turn.
+    * A turn is only geometrically possible at a tile center, so the
+      facing is settled when the counter is 0 (REFERENCE.md §2.3 policy,
+      in ``_commit_player_facing``) -- exactly the arcade rule. That runs
+      on every tick the player sits at a center, notably while stopped
+      against a wall, so a press is honoured within a single tick.
+
+    A REVERSAL is the exception to the tile-center rule and is applied
+    the moment it is pressed, wherever the player is: turning around
+    needs no intersection (pinned P8 -- no-reverse is a ghost rule), and
+    making it wait is what makes rapid back-and-forth taps feel dropped.
+    See :func:`_reverse_player_in_place`.
+
+    At the default ``player_speed`` of 1.0 the interval is one tick, so
+    the player is never mid-tile, the reversal branch cannot trigger, and
+    the per-tick cell sequence is identical to a discrete whole-tile step
+    -- leaving the engine's test suite unaffected.
+    """
+    buffered = state.buffered_direction
+    if (
+        buffered is not None
+        and state.player_move_ticks > 0
+        and buffered is state.player_direction.opposite
+    ):
+        _reverse_player_in_place(state)
+        state.buffered_direction = None
+    if state.player_move_ticks == 0 and not _commit_player_facing(state):
+        return  # flush against a wall; stays primed to turn
+    state.player_move_ticks += 1
+    if state.player_move_ticks < _step_interval(state.player_speed):
         return
+    state.player_move_ticks = 0
     step = state.player_direction
     state.player_cell = (
         state.player_cell[0] + step.dx,
@@ -338,30 +525,20 @@ def _move_player(state: GameState) -> None:
     )
 
 
-def _ghost_steps_this_tick(state: GameState, ghost: Ghost) -> bool:
-    """Whether this ghost advances a tile on the current tick.
+def _ghost_step_interval(state: GameState, ghost: Ghost) -> int:
+    """Ticks this ghost takes to cross one tile (mode-dependent).
 
-    Layered cadence gates: FRIGHTENED ghosts skip odd ticks
-    (``ghost_moves_on_tick``, 50% speed); SCATTER/CHASE ghosts move at
-    ``state.ghost_speed`` of the player's rate via an evenly-spread
-    Bresenham cadence (``int(t*s) > int((t-1)*s)`` -- a no-op at the
-    default s=1.0, so every test sees full-speed ghosts); EATEN eyes
-    always move (fast return). The speed-boost cheat additionally halves
-    every non-EATEN ghost.
+    Every mode runs at ``state.ghost_speed`` scaled by its multiplier
+    (``mode_speed_multiplier`` -- half while FRIGHTENED so a super-pacgum
+    makes ghosts *easier* to catch, double while EATEN so eyes hurry
+    home). The speed-boost cheat halves every non-EATEN ghost on top.
+    At the default ``ghost_speed`` of 1.0 this clamps to one tick per
+    tile, so the per-tick cell sequence matches a discrete step exactly.
     """
-    if not ghost_moves_on_tick(ghost, state.tick_count):
-        return False
-    if ghost.mode in (GhostMode.SCATTER, GhostMode.CHASE):
-        t, s = state.tick_count, state.ghost_speed
-        if int(t * s) <= int((t - 1) * s):
-            return False
-    if (
-        state.cheats.speed_boost
-        and ghost.mode is not GhostMode.EATEN
-        and state.tick_count % 2 == 1
-    ):
-        return False
-    return True
+    speed = state.ghost_speed * mode_speed_multiplier(ghost)
+    if state.cheats.speed_boost and ghost.mode is not GhostMode.EATEN:
+        speed *= 0.5
+    return _step_interval(speed)
 
 
 def _move_ghosts(state: GameState) -> None:
@@ -383,39 +560,48 @@ def _move_ghosts(state: GameState) -> None:
     # present (scripted test states may field fewer than four ghosts).
     blinky_cell = next(
         (
-            ghost.cell
+            state.ghost_tile(ghost)
             for ghost in state.ghosts
             if ghost.personality is GhostPersonality.BLINKY
         ),
-        state.player_cell,
+        state.player_tile,
     )
     for ghost in state.ghosts:
-        if not _ghost_steps_this_tick(state, ghost):
+        # A ghost only re-decides at a tile center -- mid-tile it is
+        # committed to the corridor it entered, which is what the
+        # intersection rule assumes and what keeps motion axis-aligned.
+        if ghost.move_ticks == 0:
+            if ghost.mode is GhostMode.EATEN:
+                if ghost.cell == ghost.home_corner:
+                    continue
+                step = choose_eaten_exit(
+                    state.adapter, ghost.cell, ghost.direction,
+                    ghost.home_corner,
+                )
+            elif ghost.mode is GhostMode.FRIGHTENED:
+                step = choose_frightened_exit(
+                    state.adapter, ghost.cell, ghost.direction, state.rng,
+                )
+            else:
+                target = target_tile(
+                    ghost, state.player_tile, state.player_direction,
+                    blinky_cell,
+                )
+                step = choose_target_exit(
+                    state.adapter, ghost.cell, ghost.direction, target,
+                )
+            ghost.direction = step
+            if step not in state.adapter.get_valid_moves(*ghost.cell):
+                continue  # sealed in: a facing, not a licence to move
+        ghost.move_span = _ghost_step_interval(state, ghost)
+        ghost.move_ticks += 1
+        if ghost.move_ticks < ghost.move_span:
             continue
-        if ghost.mode is GhostMode.EATEN:
-            if ghost.cell == ghost.home_corner:
-                continue
-            step = choose_eaten_exit(
-                state.adapter, ghost.cell, ghost.direction,
-                ghost.home_corner,
-            )
-        elif ghost.mode is GhostMode.FRIGHTENED:
-            step = choose_frightened_exit(
-                state.adapter, ghost.cell, ghost.direction, state.rng,
-            )
-        else:
-            target = target_tile(
-                ghost, state.player_cell, state.player_direction,
-                blinky_cell,
-            )
-            step = choose_target_exit(
-                state.adapter, ghost.cell, ghost.direction, target,
-            )
-        ghost.direction = step
-        if step in state.adapter.get_valid_moves(*ghost.cell):
-            ghost.cell = (
-                ghost.cell[0] + step.dx, ghost.cell[1] + step.dy,
-            )
+        ghost.move_ticks = 0
+        ghost.cell = (
+            ghost.cell[0] + ghost.direction.dx,
+            ghost.cell[1] + ghost.direction.dy,
+        )
 
 
 def _resolve_collisions(
@@ -437,13 +623,15 @@ def _resolve_collisions(
     """
     hostile_hit = False
     frightened_hits = []
+    player_tile = state.player_tile
     for ghost, prev_cell in zip(state.ghosts, prev_ghost_cells):
         if ghost.mode is GhostMode.EATEN:
             continue
-        colocated = ghost.cell == state.player_cell
+        ghost_tile = state.ghost_tile(ghost)
+        colocated = ghost_tile == player_tile
         swapped = (
-            state.player_cell == prev_cell
-            and ghost.cell == prev_player
+            player_tile == prev_cell
+            and ghost_tile == prev_player
         )
         if not (colocated or swapped):
             continue
@@ -478,6 +666,7 @@ def _lose_life(state: GameState) -> None:
         return
     state.player_cell = state.level_data.player_spawn
     state.player_direction = PLAYER_START_DIRECTION
+    state.player_move_ticks = 0
     state.buffered_direction = None
     state.ghosts = create_ghosts(state.level_data.ghost_spawns)
     state.wave = WaveController(
@@ -502,7 +691,7 @@ def _consume_pellets(state: GameState) -> None:
     eat (only scripted test stages ever hit this; parse_grid_map
     always places pellets).
     """
-    cell = state.player_cell
+    cell = state.player_tile
     if cell in state.pacgum_cells:
         state.pacgum_cells.discard(cell)
         state.score += state.config.points_per_pacgum

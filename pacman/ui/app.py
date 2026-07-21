@@ -23,13 +23,12 @@ unit tests in here -- the testable UI logic all lives in the shell.
 import logging
 import os
 import time
-from dataclasses import dataclass
 
 from mlx import Mlx
 
 from pacman.ai.ghost import Ghost, GhostMode, GhostPersonality
 from pacman.config.loader import Config
-from pacman.game.engine import ENGINE_TICKS_PER_SECOND, GameState
+from pacman.game.engine import GameState
 from pacman.maze.adapter import Direction
 from pacman.ui.shell import (
     INSTRUCTIONS_LINES,
@@ -56,6 +55,10 @@ WALL = (60, 90, 220)
 BLOCK = (40, 60, 160)
 PELLET = (255, 250, 200)
 PLAYER = (255, 210, 0)
+# The queued-turn marker. Deliberately not any ghost colour (red/pink/
+# cyan/orange), the pellet cream or the player yellow, so a pending
+# input is never mistaken for something you can eat or run into.
+INTENT = (130, 255, 150)
 FRIGHTENED = (40, 80, 255)
 EYES = (240, 240, 240)
 TEXT = (255, 255, 255)
@@ -100,29 +103,6 @@ def _int_color(color: tuple[int, int, int]) -> int:
     return (r << 16) | (g << 8) | b
 
 
-def _chebyshev(a: tuple[int, int], b: tuple[int, int]) -> int:
-    """Chebyshev (chessboard) distance between two tiles."""
-    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-
-
-@dataclass
-class _Slide:
-    """One entity's in-progress glide from ``from_pos`` to tile ``to``."""
-
-    from_pos: tuple[float, float]
-    to: tuple[int, int]
-    start_ms: float
-    dur_ms: float
-
-    def position(self, now: float) -> tuple[float, float]:
-        """Sub-tile position now: linear ease, clamped at the target."""
-        span = now - self.start_ms
-        alpha = min(1.0, span / self.dur_ms) if self.dur_ms > 0 else 1.0
-        fx, fy = self.from_pos
-        return (fx + (self.to[0] - fx) * alpha,
-                fy + (self.to[1] - fy) * alpha)
-
-
 def keysym_to_action(keysym: int) -> tuple[Action | None, str]:
     """Translate an X11 keysym into a (nav action, typed char) pair.
 
@@ -150,10 +130,6 @@ class MlxApp:
         self._static_layer: bytearray | None = None
         self._static_for: int | None = None
         self._last_ms = 0.0
-        # Per-entity motion smoothing (key -> current glide). Each entity
-        # is animated over ITS OWN move period (1/speed), so a half-speed
-        # ghost glides continuously instead of hop-pausing.
-        self._anim: dict[str, _Slide] = {}
 
     # -- Lifecycle -----------------------------------------------------
 
@@ -196,7 +172,7 @@ class MlxApp:
         if elapsed < TARGET_FRAME_MS:
             return
         self._last_ms = now
-        self.shell.advance(int(elapsed))
+        self.shell.advance(elapsed)
         if not self.shell.running:
             self.mlx.mlx_loop_exit(self.mlx_ptr)
             return
@@ -222,6 +198,23 @@ class MlxApp:
         for py in range(y0, y1):
             start = py * self.size_line + x0 * 4
             self.buffer[start:start + len(row)] = row
+
+    def _arrow(self, cx: int, cy: int, direction: Direction, size: int,
+               color: tuple[int, int, int]) -> None:
+        """Filled triangle with its apex at (cx, cy), pointing ``direction``.
+
+        Built from ``_rect`` slabs (the image layer has no polygon
+        primitive): each step back from the apex widens the slab by one
+        pixel either side, across for a horizontal arrow and down for a
+        vertical one.
+        """
+        for i in range(size):
+            ax = cx - direction.dx * i
+            ay = cy - direction.dy * i
+            if direction.dx:
+                self._rect(ax, ay - i, 1, 2 * i + 1, color)
+            else:
+                self._rect(ax - i, ay, 2 * i + 1, 1, color)
 
     # -- Rendering -----------------------------------------------------
 
@@ -370,16 +363,17 @@ class MlxApp:
         self._static_for = id(state.adapter)
 
     def _draw_dynamic(self, state: GameState) -> None:
-        """Draw pellets (fixed) and the smoothly-animated ghosts + player.
+        """Draw pellets (fixed) and the smoothly-moving ghosts + player.
 
-        Pellets sit on their tiles; the player and each ghost are drawn
-        at a sub-tile position produced by ``_animated_pos``, which
-        slides an entity from its old tile to its new one over that
-        entity's own movement period -- so a half-speed ghost glides
-        continuously rather than jumping and pausing.
+        Pellets sit on their tiles. Both the player and the ghosts are
+        drawn at the exact sub-tile position the ENGINE holds, so no
+        sprite ever trails the simulation: the previous approach glided
+        toward a tile the engine had already reached, which lagged a full
+        move period behind reality, cut diagonally across corners on a
+        turn, and let a ghost look a tile away from the player it had
+        just caught.
         """
         tile, ox, oy = self._geometry(state)
-        now = time.monotonic() * 1000
 
         def dot(fx: float, fy: float, size: int,
                 color: tuple[int, int, int]) -> None:
@@ -392,50 +386,39 @@ class MlxApp:
         for cell in state.super_pacgum_cells:
             dot(cell[0], cell[1], max(3, tile // 4), PELLET)
         for ghost in state.ghosts:
-            fx, fy = self._animated_pos(
-                ghost.personality.name, ghost.cell,
-                self._ghost_speed(state, ghost), now,
-            )
+            fx, fy = state.ghost_render_pos(ghost)
             dot(fx, fy, max(3, tile // 3), self._ghost_color(ghost))
-        px, py = self._animated_pos(
-            "player", state.player_cell, ENGINE_TICKS_PER_SECOND, now,
-        )
-        dot(px, py, max(3, tile // 3), PLAYER)
+        px, py = state.player_render_pos()
+        radius = max(3, tile // 3)
+        dot(px, py, radius, PLAYER)
+        self._draw_player_heading(state, px, py, tile, ox, oy, radius)
 
-    def _ghost_speed(self, state: GameState, ghost: Ghost) -> float:
-        """A ghost's current speed in tiles/second (mode-dependent).
+    def _draw_player_heading(
+        self, state: GameState, px: float, py: float,
+        tile: int, ox: int, oy: int, radius: int,
+    ) -> None:
+        """Point a nose the way Pac-Man moves, and flag a queued turn.
 
-        Mirrors the engine's cadence so the animation duration matches
-        how fast the ghost actually moves: EATEN eyes and the base rate
-        are full speed, FRIGHTENED is half, SCATTER/CHASE scale by the
-        state's ghost-speed balance.
+        Two separate facts, because they answer different questions. The
+        yellow nose just off the body is where he IS going. The green
+        marker at the tile edge is where he WILL go -- the buffered
+        press, which only fires once he reaches a center. Showing the
+        queued one is what makes a 90-degree turn feel acknowledged
+        rather than swallowed: the input is visibly accepted the instant
+        it is pressed, even though the corner itself has to wait.
         """
-        if ghost.mode is GhostMode.EATEN:
-            return ENGINE_TICKS_PER_SECOND
-        if ghost.mode is GhostMode.FRIGHTENED:
-            return ENGINE_TICKS_PER_SECOND * 0.5
-        return ENGINE_TICKS_PER_SECOND * state.ghost_speed
-
-    def _animated_pos(self, key: str, cell: tuple[int, int],
-                      speed: float, now: float) -> tuple[float, float]:
-        """Sub-tile render position for one entity, gliding over 1/speed.
-
-        Tracks a per-entity slide (from tile -> to tile, started at a
-        time, lasting one move period). On a new one-tile move the slide
-        restarts from the current visual position (seamless); a jump of
-        more than one tile (a life-loss reset or respawn) snaps, so
-        nothing smears across the maze.
-        """
-        dur = 1000.0 / speed if speed > 0 else 1000.0
-        slide = self._anim.get(key)
-        if slide is None or _chebyshev(slide.to, cell) > 1:  # snap
-            slide = _Slide((float(cell[0]), float(cell[1])), cell, now, dur)
-        elif cell != slide.to:  # moved one tile: restart from where it is
-            slide = _Slide(slide.position(now), cell, now, dur)
-        else:  # mid-slide (or stopped): keep going, refresh duration
-            slide.dur_ms = dur
-        self._anim[key] = slide
-        return slide.position(now)
+        cx = int(ox + px * tile + tile // 2)
+        cy = int(oy + py * tile + tile // 2)
+        size = max(3, tile // 9)
+        nose = radius + max(1, tile // 24) + size
+        facing = state.player_direction
+        self._arrow(cx + facing.dx * nose, cy + facing.dy * nose,
+                    facing, size, PLAYER)
+        queued = state.buffered_direction
+        if queued is not None and queued is not facing:
+            edge = tile // 2 - 1
+            self._arrow(cx + queued.dx * edge, cy + queued.dy * edge,
+                        queued, size, INTENT)
 
     def _ghost_color(self, ghost: Ghost) -> tuple[int, int, int]:
         if ghost.mode is GhostMode.EATEN:

@@ -12,7 +12,7 @@ from pacman.ai.ghost import (
     GhostMode,
     GhostPersonality,
     create_ghosts,
-    ghost_moves_on_tick,
+    mode_speed_multiplier,
 )
 from pacman.ai.wave import (
     WaveController,
@@ -189,18 +189,17 @@ def test_g10_super_pacgum_does_not_refrighten_an_eaten_ghost() -> None:
 
 
 def test_frightened_ghosts_move_at_half_speed() -> None:
-    """Playbook F3 (state-level half): frightened skips every odd tick."""
+    """Playbook F3 (state-level half): frightened covers half the ground."""
     frightened = two_ghosts()[0]
     frightened.mode = GhostMode.FRIGHTENED
     normal = two_ghosts()[1]
 
-    frightened_moves = [
-        ghost_moves_on_tick(frightened, t) for t in range(4)
-    ]
-    normal_moves = [ghost_moves_on_tick(normal, t) for t in range(4)]
-
-    assert frightened_moves == [True, False, True, False]
-    assert normal_moves == [True, True, True, True]
+    assert mode_speed_multiplier(frightened) == 0.5
+    assert mode_speed_multiplier(normal) == 1.0
+    assert (
+        mode_speed_multiplier(frightened)
+        == mode_speed_multiplier(normal) * 0.5
+    )
 
 
 def test_create_ghosts_classic_corner_assignment() -> None:

@@ -66,6 +66,32 @@ class Ghost:
     scatter_target: Cell | None = None
     mode: GhostMode = GhostMode.SCATTER
     respawn_ticks_remaining: int | None = None
+    # Ticks travelled from ``cell`` toward the next tile along
+    # ``direction``, out of ``move_span``. Ghost position is continuous
+    # for the same reason the player's is: the UI draws exactly where the
+    # ghost is instead of trailing a whole move period behind the
+    # collision that already happened -- a ghost must never look a tile
+    # away from the player it just caught. 0 means "on a tile center",
+    # the only place the AI re-decides. ``move_span`` is the interval the
+    # current tile is being crossed over, kept so a reversal can mirror
+    # the travel exactly; the engine maintains it.
+    move_ticks: int = 0
+    move_span: int = 1
+
+    def reverse(self) -> None:
+        """Flip facing, keeping the sub-tile position exact.
+
+        Reversing mid-tile re-anchors onto the tile being entered and
+        mirrors the remaining travel, so the ghost pivots where it
+        actually is rather than snapping to the tile it left.
+        """
+        if self.move_ticks > 0:
+            self.cell = (
+                self.cell[0] + self.direction.dx,
+                self.cell[1] + self.direction.dy,
+            )
+            self.move_ticks = self.move_span - self.move_ticks
+        self.direction = self.direction.opposite
 
     def enter_frightened(self) -> None:
         """Become frightened and reverse, unless EATEN.
@@ -78,7 +104,7 @@ class Ghost:
         if self.mode is GhostMode.EATEN:
             return
         self.mode = GhostMode.FRIGHTENED
-        self.direction = self.direction.opposite
+        self.reverse()
 
     def enter_eaten(self) -> None:
         """Caught by the player while frightened (TESTING_PLAYBOOK.md G7).
@@ -181,14 +207,16 @@ def create_ghosts(corners: list[Cell]) -> list[Ghost]:
     ]
 
 
-def ghost_moves_on_tick(ghost: Ghost, tick_index: int) -> bool:
-    """Whether this ghost advances a tile on the given engine tick.
+def mode_speed_multiplier(ghost: Ghost) -> float:
+    """This ghost's speed as a multiple of its normal rate.
 
     Frightened ghosts move at half speed (REFERENCE.md §4.6 gives the
-    arcade 50-60%; this project pins 50%): they skip every odd tick.
-    All other modes move every tick -- including EATEN, whose returning
-    "eyes" are traditionally not slowed.
+    arcade 50-60%; this project pins 50%), so a super-pacgum always makes
+    them easier to catch. EATEN "eyes" are traditionally not slowed but
+    hurried, returning at double rate. Every other mode runs normally.
     """
-    if ghost.mode is not GhostMode.FRIGHTENED:
-        return True
-    return tick_index % 2 == 0
+    if ghost.mode is GhostMode.FRIGHTENED:
+        return 0.5
+    if ghost.mode is GhostMode.EATEN:
+        return 2.0
+    return 1.0
