@@ -24,11 +24,24 @@ from pacman.maze.adapter import Direction
 
 logger = logging.getLogger(__name__)
 
-MS_PER_TICK = 1000 // ENGINE_TICKS_PER_SECOND
+# Float: 1000/60 is not a whole number, and truncating it would run the
+# simulation measurably fast against the wall clock.
+MS_PER_TICK = 1000 / ENGINE_TICKS_PER_SECOND
 
-# Ghosts move at this fraction of the player's speed (the nimble-player /
-# calmer-ghosts arcade balance). 0.5 = half speed, clearly evadable.
-GHOST_SPEED = 0.5
+# Tiles covered per engine tick. Movement is continuous (the engine
+# crosses a tile over a whole number of ticks), so these set real speed
+# rather than a stutter pattern; the engine rounds 1/speed to that tick
+# count, so any value is smooth.
+#
+# The player covers a tile every 12 ticks = 5 tiles/sec, calm to
+# control, with a tile center -- i.e. a turn opportunity -- every 200 ms.
+PLAYER_SPEED = 1 / 12
+
+# Ghosts take 24 ticks a tile = 2.5 tiles/sec, holding the classic
+# nimble-player / calmer-ghosts balance at half the player's pace.
+# Frightened ghosts halve that again (``mode_speed_multiplier``), so a
+# super-pacgum always makes them easier to catch.
+GHOST_SPEED = 1 / 24
 
 MAIN_MENU_ITEMS = ("Start Game", "View Highscores", "Instructions", "Exit")
 PAUSE_MENU_ITEMS = ("Resume", "Return to Main Menu")
@@ -114,7 +127,7 @@ class GameShell:
         self.name_buffer = ""
         self.final_score = 0
         self.final_won = False
-        self._accumulator_ms = 0
+        self._accumulator_ms = 0.0
 
     # -- Transitions ---------------------------------------------------
 
@@ -124,8 +137,10 @@ class GameShell:
         A session born already finished (an adversarial ``lives: 0``
         config) rolls straight into the end-of-game flow.
         """
-        self.session = GameSession(self.config, ghost_speed=GHOST_SPEED)
-        self._accumulator_ms = 0
+        self.session = GameSession(
+            self.config, ghost_speed=GHOST_SPEED, player_speed=PLAYER_SPEED,
+        )
+        self._accumulator_ms = 0.0
         self.screen = Screen.PLAYING
         if self.session.status is not SessionStatus.RUNNING:
             self._end_game()
@@ -246,7 +261,7 @@ class GameShell:
 
     # -- Simulation ----------------------------------------------------
 
-    def advance(self, elapsed_ms: int) -> None:
+    def advance(self, elapsed_ms: float) -> None:
         """Advance the simulation by fixed ticks over ``elapsed_ms``.
 
         Only the PLAYING screen ticks -- menus and pause freeze it

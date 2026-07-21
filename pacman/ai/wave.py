@@ -190,7 +190,7 @@ def apply_wave_tick(
         for ghost in ghosts:
             if ghost.mode in (GhostMode.SCATTER, GhostMode.CHASE):
                 ghost.mode = wave.wave_mode
-                ghost.direction = ghost.direction.opposite
+                ghost.reverse()
     elif event is WaveEvent.FRIGHTENED_ENDED:
         for ghost in ghosts:
             if ghost.mode is GhostMode.FRIGHTENED:

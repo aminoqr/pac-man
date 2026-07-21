@@ -132,6 +132,90 @@ def test_p8_player_may_reverse_instantly() -> None:
     assert state.player_direction is Direction.WEST
 
 
+def test_p8_reversal_is_instant_mid_tile_not_just_at_a_center() -> None:
+    """P8 at a SLOWED speed: a reversal tapped part-way across a tile
+    takes effect on the next tick, rather than waiting out the crossing.
+
+    At the default speed of 1.0 the player is never mid-tile, so this
+    case only exists once the UI slows it down -- and it is exactly what
+    rapid back-and-forth tapping produces.
+    """
+    state = make_state(CORRIDOR_1x5, player=(2, 0))
+    state.player_speed = 1 / 12
+    state.player_direction = Direction.EAST
+    update_game_state(state)  # one tick in: mid-tile, nowhere near a center
+    assert state.player_cell == (2, 0)
+    assert state.player_move_ticks == 1
+
+    state.buffer_input(Direction.WEST)
+    update_game_state(state)
+    assert state.player_direction is Direction.WEST  # honoured immediately
+    assert state.buffered_direction is None  # consumed, not left queued
+
+
+def test_p8_reversal_never_moves_the_player_on_screen() -> None:
+    """The pivot is exact: the drawn position either side of a flip
+    differs by one tick of travel and nothing more.
+
+    This is the anti-regression for "spamming opposite keys jumps a
+    block" -- an anchor that snapped to the nearer center instead would
+    displace the sprite by up to half a tile on every single tap.
+    """
+    for phase in range(1, 12):
+        state = make_state(CORRIDOR_1x5, player=(2, 0))
+        state.player_speed = 1 / 12
+        state.player_direction = Direction.EAST
+        for _ in range(phase):
+            update_game_state(state)
+        before_x = state.player_render_pos()[0]
+
+        state.buffer_input(Direction.WEST)
+        update_game_state(state)
+        after_x = state.player_render_pos()[0]
+        assert after_x == pytest.approx(before_x - 1 / 12), f"phase {phase}"
+
+
+def test_p8_reversal_reports_the_tile_it_is_actually_over() -> None:
+    """``player_tile`` (what pellets and collisions read) stays the
+    center the player is physically nearest, even though the reversal
+    anchors ``player_cell`` forward onto the tile being entered."""
+    # Reversed before halfway: still nearest the tile behind.
+    early = make_state(CORRIDOR_1x5, player=(2, 0))
+    early.player_speed = 1 / 12
+    early.player_direction = Direction.EAST
+    for _ in range(5):
+        update_game_state(early)
+    early.buffer_input(Direction.WEST)
+    update_game_state(early)
+    assert early.player_cell == (3, 0)  # anchor runs ahead...
+    assert early.player_tile == (2, 0)  # ...occupancy does not
+
+    # Almost all the way across: genuinely over the next tile.
+    late = make_state(CORRIDOR_1x5, player=(2, 0))
+    late.player_speed = 1 / 12
+    late.player_direction = Direction.EAST
+    for _ in range(11):
+        update_game_state(late)
+    late.buffer_input(Direction.WEST)
+    update_game_state(late)
+    assert late.player_tile == (3, 0)
+
+
+def test_spamming_opposite_keys_holds_position() -> None:
+    """The player's own report: alternating A/D every few ticks should
+    hold a spot, not drift a tile per press while inputs pile up."""
+    state = make_state(CORRIDOR_1x5, player=(2, 0))
+    state.player_speed = 1 / 12
+    state.player_direction = Direction.EAST
+    taps = (Direction.WEST, Direction.EAST)
+    for i in range(40):
+        if i % 3 == 0:  # a tap every 3 ticks (~20 presses/second)
+            state.buffer_input(taps[(i // 3) % 2])
+        update_game_state(state)
+        assert state.player_cell in {(1, 0), (2, 0), (3, 0)}
+    assert state.buffered_direction is None  # nothing left stuck
+
+
 def test_buffer_persistence_fires_exactly_at_the_junction() -> None:
     """Scripted follow-up to P4: an early Up press on the TEE corridor
     fires exactly at the junction tile center -- not before, not never.

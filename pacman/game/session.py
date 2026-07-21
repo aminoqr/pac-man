@@ -68,17 +68,25 @@ class GameSession:
     cheat (subject VI.5: "immediately win the current level").
     """
 
-    def __init__(self, config: Config, ghost_speed: float = 1.0) -> None:
+    def __init__(
+        self,
+        config: Config,
+        ghost_speed: float = 1.0,
+        player_speed: float = 1.0,
+    ) -> None:
         """Build the level plan and enter level 1.
 
         An adversarial ``lives: 0`` config produces a state that is
         born GAME_OVER; the session mirrors it immediately rather
-        than ticking a dead game. ``ghost_speed`` (default 1.0, kept by
-        the tests) is applied to every level's ghosts; the UI passes a
-        lower fraction for the nimble-player balance.
+        than ticking a dead game. ``ghost_speed``/``player_speed``
+        (both default 1.0, kept by the tests) are applied to every
+        level; the UI passes a lower ``player_speed`` to make Pac-Man
+        easier to control, and a lower ``ghost_speed`` for the classic
+        nimble-player balance.
         """
         self.config = config
         self.ghost_speed = ghost_speed
+        self.player_speed = player_speed
         self._seed_rng = Random(config.seed)
         self.level_plan = build_level_plan(config)
         self.level_index = 0
@@ -174,4 +182,5 @@ class GameSession:
         assert adapter is not None  # the loop either set it or raised
         wander_rng = Random(self._seed_rng.randint(0, _MAX_SEED))
         return create_game_state(adapter, self.config, lives, score,
-                                 wander_rng, ghost_speed=self.ghost_speed)
+                                 wander_rng, ghost_speed=self.ghost_speed,
+                                 player_speed=self.player_speed)
