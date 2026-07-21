@@ -12,10 +12,12 @@ from pacman.ai.intersection import (
     TIE_BREAK_ORDER,
     choose_exit,
     choose_frightened_exit,
+    choose_target_exit,
     legal_exits,
 )
-from pacman.maze.adapter import Direction
-from tests.mazes import PLUS_3x3, POCKET_4x1, make_adapter
+from pacman.maze.adapter import MazeAdapter, Direction
+from pacman.pathfinding.search import bfs_path
+from tests.mazes import PLUS_3x3, POCKET_4x1, RING_3x3, make_adapter
 
 CENTER = (1, 1)
 
@@ -125,3 +127,67 @@ def test_frightened_draws_are_reproducible_and_never_reverse() -> None:
     assert first == second                # F1: same seed, same path
     assert Direction.WEST not in first    # F2: reverse never drawn
     assert len(set(first)) > 1            # and it genuinely varies
+
+
+# --- Path-based navigation (Milestone 3 upgrade, choose_target_exit) -----
+
+def test_target_exit_steps_toward_the_target_arm() -> None:
+    adapter = make_adapter(PLUS_3x3)
+    # Each arm's tile makes that arm the shortest first hop.
+    assert choose_target_exit(
+        adapter, CENTER, Direction.EAST, (1, 0),
+    ) is Direction.NORTH
+    assert choose_target_exit(
+        adapter, CENTER, Direction.EAST, (0, 1),
+    ) is Direction.WEST
+
+
+def test_target_exit_may_reverse_where_greedy_would_not() -> None:
+    """Unlike the greedy rule, path navigation can double back -- a
+    chaser turning around toward its target is correct."""
+    adapter = make_adapter(POCKET_4x1)
+    # At (1,0) heading East, target (0,0) is behind: greedy's no-reverse
+    # forbids West, but the shortest path home is exactly that reversal.
+    assert choose_exit(
+        adapter, (1, 0), Direction.EAST, (0, 0),
+    ) is Direction.EAST
+    assert choose_target_exit(
+        adapter, (1, 0), Direction.EAST, (0, 0),
+    ) is Direction.WEST
+
+
+def test_target_exit_clamps_a_phantom_off_maze_target() -> None:
+    """Targets are never clamped by the AI (REFERENCE.md §4.4); the
+    path chooser resolves an outside point to the nearest walkable
+    anchor and heads there instead of failing."""
+    adapter = make_adapter(PLUS_3x3)
+    # Far to the north-east of the 3x3 plus: anchor resolves toward the
+    # top/right arm, so the first hop is North (tie-break over East).
+    step = choose_target_exit(adapter, CENTER, Direction.EAST, (99, -99))
+    assert step in (Direction.NORTH, Direction.EAST)
+
+
+def test_target_exit_falls_back_to_greedy_when_unreachable() -> None:
+    """A sealed target has no path; the chooser degrades to the greedy
+    rule and stays total."""
+    adapter = make_adapter(RING_3x3)
+    # (1,1) is the sealed center -- unreachable from the ring.
+    greedy = choose_exit(adapter, (0, 0), Direction.EAST, (1, 1))
+    assert choose_target_exit(
+        adapter, (0, 0), Direction.EAST, (1, 1),
+    ) is greedy
+
+
+def test_target_exit_reaches_a_real_maze_target_in_shortest_path() -> None:
+    """Re-deciding every tile like the engine does, a ghost arrives in
+    exactly the graph distance -- no orbiting local minima."""
+    adapter = MazeAdapter(15, 15, seed=42)
+    adapter.load_wheel_maze()
+    start, target = adapter.center(), adapter.corners()[0]
+    expected = bfs_path(adapter, start, target).step_count
+    cell, direction = start, Direction.NORTH
+    for hop in range(expected):
+        assert cell != target, f"arrived early at hop {hop}"
+        direction = choose_target_exit(adapter, cell, direction, target)
+        cell = (cell[0] + direction.dx, cell[1] + direction.dy)
+    assert cell == target

@@ -252,6 +252,20 @@ class MazeAdapter:
                         return (nx, ny)
         raise MazeAdapterError("maze has no walkable cell at all")
 
+    def nearest_walkable(self, x: int, y: int) -> tuple[int, int]:
+        """Public: the walkable cell nearest to (x, y), coords clamped first.
+
+        Ghost target tiles are deliberately un-clamped and may lie
+        outside the maze (a scatter point beyond a corner, Pinky's
+        4-ahead phantom). Path-based navigation needs a real in-maze
+        anchor, so the coordinates are first clamped into bounds and
+        then resolved to the nearest walkable cell (Chebyshev), keeping
+        the search cheap for far-outside points.
+        """
+        clamped_x = min(max(x, 0), self.width - 1)
+        clamped_y = min(max(y, 0), self.height - 1)
+        return self._nearest_walkable(clamped_x, clamped_y)
+
     def corners(self) -> list[tuple[int, int]]:
         """Return the 4 walkable corner cells (ghost spawns / super-pacgums).
 

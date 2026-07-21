@@ -11,10 +11,12 @@
 # modify its code -- it is re-installed as-is during peer review.
 ./mazegenerator-2.1.0-py3-none-any.whl
 
-# Graphics. The subject mandates "MLX or similar": every function you call
-# must have an MLX equivalent (window, images/pixels, keyboard hooks, loop).
-# pygame is the conventional Python choice satisfying that constraint.
-pygame>=2.5
+# Graphics: the 42 MiniLibX (subject IV mandates MLX). This is the
+# official Python-wrapped MLX (github.com/42school/mlx_CLXV). A prebuilt
+# wheel for Linux x86_64 is vendored here (it bundles a compiled
+# libmlx.so); on a different arch/OS, regenerate it with
+# `scripts/build_mlx.sh` (or `make mlx`) before installing.
+./mlx-2.4-py3-none-any.whl
 
 # Mandatory linting (subject III.1 / Makefile "lint" rule).
 flake8>=7.0

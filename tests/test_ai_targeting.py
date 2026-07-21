@@ -30,7 +30,7 @@ def make_ghost(
     home: Cell = (0, 0),
 ) -> Ghost:
     """Minimal ghost for dispatch tests; direction is irrelevant here."""
-    return Ghost(personality, cell, Direction.EAST, home, mode)
+    return Ghost(personality, cell, Direction.EAST, home, mode=mode)
 
 
 # --- The fixed-point table, facing East ---------------------------------

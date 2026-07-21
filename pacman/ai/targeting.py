@@ -99,13 +99,18 @@ def target_tile(
 ) -> Cell:
     """The ghost's current target tile given its mode (REFERENCE.md §4.1).
 
-    SCATTER and EATEN both target ``home_corner`` (scatter corner ==
-    spawn corner == respawn point in this project); CHASE dispatches on
-    personality. FRIGHTENED has no target by design -- movement is a
-    seeded-random walk (intersection.choose_frightened_exit), so asking
-    for one is a programming error and fails loudly.
+    SCATTER aims at the ghost's ``scatter_target`` -- a point outside
+    the maze beyond its corner, so it patrols its quadrant instead of
+    jittering on its spawn cell (falls back to ``home_corner`` for a
+    ghost built without one). EATEN targets ``home_corner`` (the real
+    respawn cell the eyes must reach). CHASE dispatches on personality.
+    FRIGHTENED has no target by design -- movement is a seeded-random
+    walk (intersection.choose_frightened_exit), so asking for one is a
+    programming error and fails loudly.
     """
-    if ghost.mode in (GhostMode.SCATTER, GhostMode.EATEN):
+    if ghost.mode is GhostMode.SCATTER:
+        return ghost.scatter_target or ghost.home_corner
+    if ghost.mode is GhostMode.EATEN:
         return ghost.home_corner
     if ghost.mode is GhostMode.CHASE:
         return chase_target(ghost, player_cell, player_direction, blinky_cell)
