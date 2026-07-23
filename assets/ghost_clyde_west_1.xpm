@@ -1,0 +1,37 @@
+/* XPM */
+static const char *ghost_clyde_west_1[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 20 1 ",
+"  c #FE9C00",
+". c #FF9C00",
+"X c #FE9D00",
+"o c #FF9D00",
+"O c #FE9C01",
+"+ c #FF9C01",
+"@ c #FE9D01",
+"# c #FF9D01",
+"$ c #0000FE",
+"% c #0100FF",
+"& c #0001FF",
+"* c #FEFEFE",
+"= c #FFFEFE",
+"- c #FEFFFE",
+"; c #FFFFFE",
+": c #FEFEFF",
+"> c #FFFEFF",
+", c #FEFFFF",
+"< c white",
+"1 c None",
+/* pixels */
+"1111OOO1111",
+"11OOOOOOO11",
+"1>>OOO>>OO1",
+"$$>>O$$>>O1",
+"$$>>O$$>>OO",
+"O>>OOO>>OOO",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OO1OO1OO1OO"
+};

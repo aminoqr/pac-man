@@ -32,6 +32,7 @@ from pacman.ai.ghost import Ghost, GhostMode, GhostPersonality
 from pacman.config.loader import Config
 from pacman.game.engine import GameState
 from pacman.maze.adapter import Direction
+from pacman.ui import font
 from pacman.ui.shell import (
     INSTRUCTIONS_LINES,
     MAIN_MENU_ITEMS,
@@ -43,10 +44,15 @@ from pacman.ui.shell import (
 
 logger = logging.getLogger(__name__)
 
-BOARD_SIZE = 720
-HUD_HEIGHT = 48
-WIDTH = BOARD_SIZE
-HEIGHT = BOARD_SIZE + HUD_HEIGHT
+# The window fills the display (queried at startup); these are only the
+# fallbacks for when the screen size cannot be read. SCREEN_MARGIN_H
+# leaves room for the window manager's title bar so a screen-sized
+# window is not clipped off the bottom.
+DEFAULT_WIDTH = 1280
+DEFAULT_HEIGHT = 800
+MIN_WIDTH = 900
+MIN_HEIGHT = 640
+SCREEN_MARGIN_H = 80
 
 TARGET_FRAME_MS = 16  # ~60 fps render cap; the sim runs at its own rate
 
@@ -70,6 +76,11 @@ EYES = (240, 240, 240)
 TEXT = (255, 255, 255)
 DIM = (150, 150, 170)
 SELECTED = (255, 210, 0)
+# Menu chrome: a faint panel behind text blocks, the framing border, and
+# the corner credit.
+PANEL = (22, 22, 46)
+BORDER = (60, 90, 220)
+CREDIT = (120, 120, 150)
 
 GHOST_COLORS = {
     GhostPersonality.BLINKY: (255, 40, 40),
@@ -103,19 +114,27 @@ def _pack(color: tuple[int, int, int]) -> bytes:
     return bytes((b, g, r, 255))
 
 
-def _int_color(color: tuple[int, int, int]) -> int:
-    """Pack an (r, g, b) color into a 0xRRGGBB int for mlx_string_put."""
-    r, g, b = color
-    return (r << 16) | (g << 8) | b
+# Where sprite icons live (repo-root/assets). Every .xpm in there is
+# loaded under its filename stem; what gets drawn is chosen by a
+# candidate list per entity (direction + animation frame first, then
+# ever-simpler fallbacks, finally the drawn shape). That way icons can
+# be added one at a time and each one starts being used immediately.
+SPRITE_DIR = Path(__file__).resolve().parents[2] / "assets"
 
+# How long each animation frame is held, in milliseconds.
+ANIM_PERIOD_MS = 110
 
-# Where sprite icons live (repo-root/assets/sprites), and the names the
-# renderer looks for. Each is optional -- a missing/broken file falls
-# back to the drawn shape, so icons can be added one at a time.
-SPRITE_DIR = Path(__file__).resolve().parents[2] / "assets" / "sprites"
-SPRITE_NAMES = (
-    "pacman", "blinky", "pinky", "inky", "clyde", "frightened", "eyes",
-)
+# Direction -> the word used in sprite filenames (matches the Direction
+# enum's own names, which is how the artwork is labelled).
+DIR_NAME = {
+    Direction.NORTH: "north",
+    Direction.SOUTH: "south",
+    Direction.EAST: "east",
+    Direction.WEST: "west",
+}
+
+# Highest ``pacman_death_<n>`` frame the renderer will look for.
+MAX_DEATH_FRAMES = 16
 
 # A parsed sprite: pixel rows, each pixel an (r, g, b) or None (clear).
 Pixel = tuple[int, int, int] | None
@@ -206,7 +225,15 @@ class MlxApp:
         self.win_ptr: int | None = None
         self.img_ptr: int | None = None
         self.buffer: memoryview | None = None
-        self.size_line = WIDTH * 4
+        # Window/layout geometry, finalized in setup() from the display.
+        self.width = DEFAULT_WIDTH
+        self.height = DEFAULT_HEIGHT
+        self.hud_h = 56
+        self.board = 720          # square play area, centered
+        self.board_x = 0
+        self.board_y = 0
+        self.ui = 2               # base pixel-font scale
+        self.size_line = DEFAULT_WIDTH * 4
         self._static_layer: bytearray | None = None
         self._static_for: int | None = None
         self._last_ms = 0.0
@@ -216,36 +243,78 @@ class MlxApp:
         self._sprite_runs: dict[
             tuple[str, int], list[tuple[int, int, bytes]]
         ] = {}
+        self._death_frame_count: int | None = None
 
     # -- Lifecycle -----------------------------------------------------
 
     def setup(self) -> None:
-        """Open the window, allocate the image buffer, load sprite icons."""
+        """Open a display-sized window, allocate the buffer, load sprites."""
         self.mlx_ptr = self.mlx.mlx_init()
+        self._resolve_geometry()
         self.win_ptr = self.mlx.mlx_new_window(
-            self.mlx_ptr, WIDTH, HEIGHT, "42 Pac-Man",
+            self.mlx_ptr, self.width, self.height, "42 Pac-Man",
         )
-        self.img_ptr = self.mlx.mlx_new_image(self.mlx_ptr, WIDTH, HEIGHT)
+        self.img_ptr = self.mlx.mlx_new_image(
+            self.mlx_ptr, self.width, self.height,
+        )
         self.buffer, _bpp, self.size_line, _fmt = (
             self.mlx.mlx_get_data_addr(self.img_ptr)
         )
         self._load_sprites()
 
-    def _load_sprites(self) -> None:
-        """Load any ``assets/sprites/<name>.xpm`` that exist; skip the rest.
+    def _resolve_geometry(self) -> None:
+        """Size the window to the display and derive the layout from it.
 
-        A missing or malformed file is logged and skipped -- the entity
-        then renders as its drawn shape, so the game never depends on the
-        icons being present or valid.
+        The play area is the largest centered square that fits above the
+        HUD, so the maze stays square (pillar-boxed on a wide screen);
+        the font scale is derived from the height so text keeps its
+        proportions on any display. A failed screen query just falls back
+        to the default window size rather than aborting.
         """
-        for name in SPRITE_NAMES:
-            path = SPRITE_DIR / f"{name}.xpm"
-            if not path.exists():
-                continue
+        screen_w, screen_h = DEFAULT_WIDTH, DEFAULT_HEIGHT
+        try:
+            _ret, screen_w, screen_h = self.mlx.mlx_get_screen_size(
+                self.mlx_ptr,
+            )
+        except Exception as exc:  # any MLX/driver oddity -> defaults
+            logger.warning("Could not read screen size (%s); windowed.", exc)
+        self.width = max(MIN_WIDTH, int(screen_w))
+        self.height = max(MIN_HEIGHT, int(screen_h) - SCREEN_MARGIN_H)
+        self.ui = max(2, self.height // 260)
+        self.hud_h = max(48, font.text_height(self.ui) + 6 * self.ui)
+        self.board = min(self.width, self.height - self.hud_h)
+        self.board_x = (self.width - self.board) // 2
+        self.board_y = 0
+
+    def _load_sprites(self) -> None:
+        """Load every ``assets/sprites/*.xpm`` under its filename stem.
+
+        A malformed file is logged and skipped -- the entity then falls
+        back through its candidate list to a drawn shape, so the game
+        never depends on the icons being present or valid.
+        """
+        if not SPRITE_DIR.is_dir():
+            return
+        for path in sorted(SPRITE_DIR.glob("*.xpm")):
             try:
-                self.sprites[name] = parse_xpm(path.read_text())
+                self.sprites[path.stem] = parse_xpm(path.read_text())
             except (OSError, ValueError, IndexError) as exc:
                 logger.warning("Could not load sprite %s: %s", path, exc)
+
+    def _anim_frame(self) -> int:
+        """Which of the two animation variants is showing right now."""
+        ticks = int(time.monotonic() * 1000) // ANIM_PERIOD_MS
+        return 1 if ticks % 2 == 0 else 2
+
+    def _player_anim_phase(self) -> int:
+        """Pac-Man's 3-phase chomp: 0 = mouth shut, then the two opens.
+
+        The closed frame is the shared ``full_pacman`` circle, so the
+        cycle reads as a real chomp (shut -> part -> wide) instead of
+        flicking between two open mouths.
+        """
+        ticks = int(time.monotonic() * 1000) // ANIM_PERIOD_MS
+        return int(ticks % 3)
 
     def run(self) -> int:
         """Register the MLX hooks and run the blocking event loop."""
@@ -294,7 +363,7 @@ class MlxApp:
         """Fill an axis-aligned rectangle, clipped to the image bounds."""
         assert self.buffer is not None
         x0, y0 = max(x, 0), max(y, 0)
-        x1, y1 = min(x + w, WIDTH), min(y + h, HEIGHT)
+        x1, y1 = min(x + w, self.width), min(y + h, self.height)
         if x1 <= x0 or y1 <= y0:
             return
         row = _pack(color) * (x1 - x0)
@@ -321,34 +390,134 @@ class MlxApp:
 
     # -- Rendering -----------------------------------------------------
 
-    _TEXT_SCREENS = (Screen.MAIN_MENU, Screen.INSTRUCTIONS, Screen.HIGHSCORES)
+    _MENU_SCREENS = (Screen.MAIN_MENU, Screen.INSTRUCTIONS, Screen.HIGHSCORES)
 
     def draw(self) -> None:
         """Render one frame of the shell's current screen.
 
-        The image layer holds the board (or a plain background for the
-        menu/info screens); text is layered over the blit as a second
-        pass, since ``mlx_string_put`` draws onto the window directly.
+        EVERYTHING -- board, sprites and text alike -- is composed into
+        the off-screen image and blitted once. Drawing text separately
+        onto the window (``mlx_string_put``) is what made the menus
+        flicker: each frame's blit wiped the text before it was redrawn,
+        so any frame presented in between showed none of it.
         """
-        if self.shell.screen in self._TEXT_SCREENS:
-            self._fill(BACKGROUND)
+        if self.shell.screen in self._MENU_SCREENS:
+            self._draw_menu_screen()
         else:  # PLAYING / PAUSED / NAME_ENTRY all show the board.
             self._draw_game()
+            self._draw_hud()
+            if self.shell.screen is Screen.PAUSED:
+                self._draw_pause_overlay()
+            elif self.shell.screen is Screen.NAME_ENTRY:
+                self._draw_name_overlay()
         self.mlx.mlx_put_image_to_window(
             self.mlx_ptr, self.win_ptr, self.img_ptr, 0, 0,
         )
-        self._draw_overlays()
 
-    def _string(self, x: int, y: int, color: tuple[int, int, int],
-                text: str) -> None:
-        """Draw a line of text on the window at (x, y)."""
-        self.mlx.mlx_string_put(
-            self.mlx_ptr, self.win_ptr, x, y, _int_color(color), text,
+    # -- Text -----------------------------------------------------------
+
+    def _text(self, x: int, y: int, text: str,
+              color: tuple[int, int, int], scale: int) -> None:
+        """Draw ``text`` into the image with its top-left at (x, y)."""
+        for bx, by, bw, bh in font.runs(text, scale):
+            self._rect(x + bx, y + by, bw, bh, color)
+
+    def _text_center(self, y: int, text: str,
+                     color: tuple[int, int, int], scale: int) -> None:
+        """Draw ``text`` horizontally centered in the window."""
+        self._text((self.width - font.text_width(text, scale)) // 2, y,
+                   text, color, scale)
+
+    # -- Menu / info screens ---------------------------------------------
+
+    def _draw_menu_screen(self) -> None:
+        """Background, frame and credit shared by every non-game screen."""
+        self._fill(BACKGROUND)
+        self._draw_frame()
+        if self.shell.screen is Screen.MAIN_MENU:
+            self._draw_main_menu()
+        elif self.shell.screen is Screen.INSTRUCTIONS:
+            self._draw_info_page("HOW TO PLAY", INSTRUCTIONS_LINES)
+        else:
+            self._draw_info_page("HIGH SCORES",
+                                 self.shell.highscore_lines())
+        self._draw_credit()
+
+    def _draw_frame(self) -> None:
+        """A thin arcade border inset from the window edge."""
+        pad = self.ui * 4
+        thick = max(2, self.ui)
+        self._rect(pad, pad, self.width - 2 * pad, thick, BORDER)
+        self._rect(pad, self.height - pad - thick,
+                   self.width - 2 * pad, thick, BORDER)
+        self._rect(pad, pad, thick, self.height - 2 * pad, BORDER)
+        self._rect(self.width - pad - thick, pad, thick,
+                   self.height - 2 * pad, BORDER)
+
+    def _draw_credit(self) -> None:
+        """The authors, in the bottom-right corner."""
+        scale = max(1, self.ui - 1)
+        text = "MADE BY AMIN & DAGEM"
+        pad = self.ui * 4 + self.ui * 3
+        self._text(self.width - pad - font.text_width(text, scale),
+                   self.height - pad - font.text_height(scale),
+                   text, CREDIT, scale)
+
+    def _draw_main_menu(self) -> None:
+        """Title, the sprite-marked selection list, and a score preview."""
+        title_scale = self.ui * 3
+        y = self.height // 8
+        self._text_center(y, "PAC-MAN", PLAYER, title_scale)
+        y += font.text_height(title_scale) + self.ui * 4
+        self._text_center(y, "GHOSTS!  MORE GHOSTS!", DIM, self.ui)
+
+        # Selection list, centered as a block so the marker has room.
+        item_scale = self.ui * 2
+        step = font.text_height(item_scale) + self.ui * 7
+        widest = max(font.text_width(i, item_scale) for i in MAIN_MENU_ITEMS)
+        left = (self.width - widest) // 2
+        y = self.height // 3 + self.ui * 6
+        for index, item in enumerate(MAIN_MENU_ITEMS):
+            chosen = index == self.shell.menu_index
+            self._text(left, y, item, SELECTED if chosen else TEXT,
+                       item_scale)
+            if chosen:
+                self._draw_marker(left, y, item_scale)
+            y += step
+
+        self._draw_score_preview(y + self.ui * 4)
+
+    def _draw_marker(self, left: int, y: int, scale: int) -> None:
+        """Point at the highlighted item with Pac-Man (or a chevron)."""
+        size = font.text_height(scale)
+        cx = left - size - self.ui * 4
+        name = self._first_loaded(
+            ["pacman_east_1", "pacman_east", "full_pacman", "pacman"]
         )
+        if name is None or not self._blit_sprite_px(name, cx, y, size):
+            self._text(cx, y, ">", SELECTED, scale)
 
-    def _center_x(self, text: str) -> int:
-        """Rough centered x for a monospace-ish 6px glyph width."""
-        return max((WIDTH - len(text) * 6) // 2, 8)
+    def _draw_score_preview(self, y: int) -> None:
+        """Top few scores under the menu, so the board is visible at once."""
+        self._text_center(y, "- HIGH SCORES -", DIM, self.ui)
+        y += font.text_height(self.ui) + self.ui * 3
+        for line in self.shell.highscore_lines()[:5]:
+            self._text_center(y, line, TEXT, self.ui)
+            y += font.text_height(self.ui) + self.ui * 2
+
+    def _draw_info_page(self, title: str, lines: tuple[str, ...]) -> None:
+        """A titled page of centered lines (instructions / highscores)."""
+        title_scale = self.ui * 2
+        y = self.height // 10
+        self._text_center(y, title, PLAYER, title_scale)
+        y += font.text_height(title_scale) + self.ui * 8
+        for line in lines:
+            self._text_center(y, line, TEXT, self.ui)
+            y += font.text_height(self.ui) + self.ui * 3
+        self._text_center(self.height - self.ui * 20,
+                          "PRESS ENTER OR ESC TO GO BACK", DIM, self.ui)
+
+    # -- In-game HUD and overlays ----------------------------------------
 
     def _draw_game(self) -> None:
         if self.shell.session is None:
@@ -357,77 +526,74 @@ class MlxApp:
         self._blit_static_layer(self.shell.session.state)
         self._draw_dynamic(self.shell.session.state)
 
-    def _draw_overlays(self) -> None:
-        """Text drawn on the window after the image blit."""
-        if self.shell.screen is Screen.MAIN_MENU:
-            self._string(self._center_x("PAC-MAN"), 90, PLAYER, "PAC-MAN")
-            for i, item in enumerate(MAIN_MENU_ITEMS):
-                mark = "> " if i == self.shell.menu_index else "  "
-                color = SELECTED if i == self.shell.menu_index else TEXT
-                self._string(self._center_x(mark + item), 220 + 40 * i,
-                             color, mark + item)
-            self._string(self._center_x("Highscores"), 430, DIM, "Highscores")
-            for r, line in enumerate(self.shell.highscore_lines()[:5]):
-                self._string(self._center_x(line), 460 + 22 * r, DIM, line)
-        elif self.shell.screen is Screen.INSTRUCTIONS:
-            self._draw_text_overlay("Instructions", INSTRUCTIONS_LINES)
-        elif self.shell.screen is Screen.HIGHSCORES:
-            self._draw_text_overlay(
-                "Highscores", self.shell.highscore_lines(),
-            )
-        elif self.shell.screen is Screen.PLAYING:
-            self._draw_hud()
-        elif self.shell.screen is Screen.PAUSED:
-            self._draw_hud()
-            self._draw_pause_overlay()
-        elif self.shell.screen is Screen.NAME_ENTRY:
-            self._draw_hud()
-            self._draw_name_overlay()
-
-    def _draw_text_overlay(self, title: str, lines: tuple[str, ...]) -> None:
-        self._string(self._center_x(title), 70, PLAYER, title)
-        for r, line in enumerate(lines):
-            self._string(self._center_x(line), 170 + 30 * r, TEXT, line)
-
-    def _draw_pause_overlay(self) -> None:
-        self._string(self._center_x("PAUSED"), 300, PLAYER, "PAUSED")
-        for i, item in enumerate(PAUSE_MENU_ITEMS):
-            mark = "> " if i == self.shell.pause_index else "  "
-            color = SELECTED if i == self.shell.pause_index else TEXT
-            self._string(self._center_x(mark + item), 360 + 40 * i,
-                         color, mark + item)
-
-    def _draw_name_overlay(self) -> None:
-        title = "VICTORY!" if self.shell.final_won else "GAME OVER"
-        self._string(self._center_x(title), 250, PLAYER, title)
-        score = f"Final score: {self.shell.final_score}"
-        self._string(self._center_x(score), 300, TEXT, score)
-        self._string(self._center_x("Enter your name:"), 350, DIM,
-                     "Enter your name:")
-        caret = self.shell.name_buffer + "_"
-        self._string(self._center_x(caret), 390, SELECTED, caret)
-        hint = "letters/digits/spaces (max 10) - Enter to save"
-        self._string(self._center_x(hint), 440, DIM, hint)
-
     def _draw_hud(self) -> None:
+        """Score / lives / level / time strip under the board."""
         if self.shell.session is None:
             return
         state = self.shell.session.state
-        hud = (
-            f"Score: {state.score}   Lives: {state.lives}   "
-            f"Level: {self.shell.session.level_number}   "
-            f"Time: {state.seconds_remaining}"
-        )
-        self._string(12, BOARD_SIZE + 22, TEXT, hud)
+        top = self.board_y + self.board
+        self._rect(0, top, self.width, self.height - top, PANEL)
+        self._rect(0, top, self.width, max(1, self.ui // 2), BORDER)
+        text = (f"SCORE {state.score}    LIVES {state.lives}    "
+                f"LEVEL {self.shell.session.level_number}    "
+                f"TIME {state.seconds_remaining}")
+        y = top + (self.height - top - font.text_height(self.ui)) // 2
+        self._text(self.board_x + self.ui * 2, y, text, TEXT, self.ui)
+        hint = "P PAUSE   F1-F5 CHEATS"
+        self._text(self.width - self.board_x - self.ui * 2
+                   - font.text_width(hint, max(1, self.ui - 1)),
+                   y, hint, DIM, max(1, self.ui - 1))
+
+    def _veil(self) -> None:
+        """Darken the board so an overlay reads clearly over it."""
+        step = 2  # every other row -> a cheap 50% scrim
+        for y in range(self.board_y, self.board_y + self.board, step):
+            self._rect(self.board_x, y, self.board, 1, BACKGROUND)
+
+    def _draw_pause_overlay(self) -> None:
+        self._veil()
+        title_scale = self.ui * 3
+        y = self.board_y + self.board // 4
+        self._text_center(y, "PAUSED", PLAYER, title_scale)
+        y += font.text_height(title_scale) + self.ui * 10
+        item_scale = self.ui * 2
+        widest = max(font.text_width(i, item_scale) for i in PAUSE_MENU_ITEMS)
+        left = (self.width - widest) // 2
+        for index, item in enumerate(PAUSE_MENU_ITEMS):
+            chosen = index == self.shell.pause_index
+            self._text(left, y, item, SELECTED if chosen else TEXT,
+                       item_scale)
+            if chosen:
+                self._draw_marker(left, y, item_scale)
+            y += font.text_height(item_scale) + self.ui * 7
+
+    def _draw_name_overlay(self) -> None:
+        self._veil()
+        title_scale = self.ui * 3
+        y = self.board_y + self.board // 5
+        title = "VICTORY!" if self.shell.final_won else "GAME OVER"
+        self._text_center(y, title, PLAYER, title_scale)
+        y += font.text_height(title_scale) + self.ui * 8
+        self._text_center(y, f"FINAL SCORE  {self.shell.final_score}",
+                          TEXT, self.ui * 2)
+        y += font.text_height(self.ui * 2) + self.ui * 10
+        self._text_center(y, "ENTER YOUR NAME", DIM, self.ui)
+        y += font.text_height(self.ui) + self.ui * 5
+        self._text_center(y, self.shell.name_buffer + "_", SELECTED,
+                          self.ui * 2)
+        y += font.text_height(self.ui * 2) + self.ui * 8
+        self._text_center(y, "LETTERS DIGITS SPACES - MAX 10 - ENTER SAVES",
+                          DIM, max(1, self.ui - 1))
 
     # -- Board rendering into the image buffer -------------------------
 
     def _geometry(self, state: GameState) -> tuple[int, int, int]:
+        """Tile size and pixel origin of the maze inside the play area."""
         adapter = state.adapter
-        tile = max(4, min(BOARD_SIZE // adapter.width,
-                          BOARD_SIZE // adapter.height))
-        ox = (BOARD_SIZE - tile * adapter.width) // 2
-        oy = (BOARD_SIZE - tile * adapter.height) // 2
+        tile = max(4, min(self.board // adapter.width,
+                          self.board // adapter.height))
+        ox = self.board_x + (self.board - tile * adapter.width) // 2
+        oy = self.board_y + (self.board - tile * adapter.height) // 2
         return tile, ox, oy
 
     def _blit_static_layer(self, state: GameState) -> None:
@@ -488,24 +654,88 @@ class MlxApp:
             dot(cell[0], cell[1], max(1, tile // 10), PELLET)
         for cell in state.super_pacgum_cells:
             dot(cell[0], cell[1], max(3, tile // 4), PELLET)
-        for ghost in state.ghosts:
+        # Ghosts vanish while Pac-Man dies, as in the arcade -- nothing
+        # should be moving or crowding the frame during the animation.
+        dying = state.dying_ticks > 0
+        for ghost in [] if dying else state.ghosts:
             fx, fy = state.ghost_render_pos(ghost)
-            if not self._blit_sprite(self._ghost_sprite(ghost), fx, fy,
-                                     tile, ox, oy):
+            name = self._first_loaded(self._ghost_sprite(ghost))
+            if name is None or not self._blit_sprite(name, fx, fy,
+                                                     tile, ox, oy):
                 dot(fx, fy, max(3, tile // 3), self._ghost_color(ghost))
         px, py = state.player_render_pos()
         radius = max(3, tile // 3)
-        if not self._blit_sprite("pacman", px, py, tile, ox, oy):
+        name = self._first_loaded(self._player_sprite(state))
+        drawn = name is not None and self._blit_sprite(name, px, py,
+                                                       tile, ox, oy)
+        if not drawn:
             dot(px, py, radius, PLAYER)
-        self._draw_player_heading(state, px, py, tile, ox, oy, radius)
+        # A directional sprite already shows which way he faces, so the
+        # extra nose would only clutter it; the queued-turn cue stays.
+        self._draw_player_heading(state, px, py, tile, ox, oy, radius,
+                                  show_nose=not drawn)
 
-    def _ghost_sprite(self, ghost: Ghost) -> str:
-        """The sprite name for a ghost given its current mode."""
+    def _ghost_sprite(self, ghost: Ghost) -> list[str]:
+        """Candidate sprite names for a ghost, best match first.
+
+        Eaten ghosts are just eyes looking where they travel; frightened
+        ghosts share one blue set regardless of heading; otherwise it is
+        the personality's own directional, animated set.
+        """
+        facing = DIR_NAME[ghost.direction]
+        frame = self._anim_frame()
         if ghost.mode is GhostMode.EATEN:
-            return "eyes"
+            return [f"floating_eyes_{facing}", "floating_eyes", "eyes"]
         if ghost.mode is GhostMode.FRIGHTENED:
-            return "frightened"
-        return ghost.personality.name.lower()
+            return [f"frightened_{frame}", "frightened_1", "frightened"]
+        name = ghost.personality.name.lower()
+        return [f"ghost_{name}_{facing}_{frame}", f"ghost_{name}_{facing}_1",
+                f"ghost_{name}_{facing}", f"ghost_{name}", name]
+
+    def _player_sprite(self, state: GameState) -> list[str]:
+        """Candidate sprite names for Pac-Man, best match first.
+
+        While the death pause runs, the dying frames take over: the
+        elapsed fraction of the pause picks the frame, so the sequence
+        plays once, in order, however many frames were drawn.
+        """
+        if state.dying_ticks > 0:
+            return [self._death_sprite(state)]
+        facing = DIR_NAME[state.player_direction]
+        phase = self._player_anim_phase()
+        if phase == 0:  # mouth shut: the shared full circle
+            return ["full_pacman", f"pacman_{facing}_1",
+                    f"pacman_{facing}", "pacman"]
+        return [f"pacman_{facing}_{phase}", f"pacman_{facing}_1",
+                f"pacman_{facing}", "full_pacman", "pacman"]
+
+    def _death_frames(self) -> int:
+        """How many ``pacman_death_<n>`` frames are actually loaded."""
+        if self._death_frame_count is None:
+            count = 0
+            for index in range(1, MAX_DEATH_FRAMES + 1):
+                if f"pacman_death_{index}" not in self.sprites:
+                    break
+                count = index
+            self._death_frame_count = count
+        return self._death_frame_count
+
+    def _death_sprite(self, state: GameState) -> str:
+        """The dying frame for how far the death pause has progressed."""
+        frames = self._death_frames()
+        if frames == 0:
+            return "full_pacman"
+        total = max(1, state.death_pause_ticks)
+        elapsed = total - state.dying_ticks
+        index = min(frames, elapsed * frames // total + 1)
+        return f"pacman_death_{index}"
+
+    def _first_loaded(self, candidates: list[str]) -> str | None:
+        """The first candidate that actually has a sprite loaded."""
+        for name in candidates:
+            if name in self.sprites:
+                return name
+        return None
 
     def _blit_sprite(self, name: str, fx: float, fy: float,
                      tile: int, ox: int, oy: int) -> bool:
@@ -517,17 +747,26 @@ class MlxApp:
         it blends over walls/pellets with a margin from the borders.
         """
         size = max(4, int(tile * SPRITE_SCALE))
+        center_x = ox + fx * tile + tile / 2
+        center_y = oy + fy * tile + tile / 2
+        return self._blit_sprite_px(name, int(center_x - size / 2),
+                                    int(center_y - size / 2), size)
+
+    def _blit_sprite_px(self, name: str, left: int, top: int,
+                        size: int) -> bool:
+        """Composite sprite ``name`` at a pixel position; True if drawn.
+
+        The pixel-space entry point (menus use it for the selection
+        marker); returns False when the sprite is not loaded so callers
+        can fall back. Runs are clipped to the image bounds.
+        """
         runs = self._scaled_runs(name, size)
         if runs is None:
             return False
         assert self.buffer is not None
-        center_x = ox + fx * tile + tile / 2
-        center_y = oy + fy * tile + tile / 2
-        left = int(center_x - size / 2)
-        top = int(center_y - size / 2)
         for dy, dx0, run in runs:
             y = top + dy
-            if not (0 <= y < HEIGHT):
+            if not (0 <= y < self.height):
                 continue
             x = left + dx0
             run_px = len(run) // 4
@@ -536,8 +775,8 @@ class MlxApp:
                 if cut >= run_px:
                     continue
                 run, x, run_px = run[cut * 4:], 0, run_px - cut
-            if x + run_px > WIDTH:  # clip right
-                keep = WIDTH - x
+            if x + run_px > self.width:  # clip right
+                keep = self.width - x
                 if keep <= 0:
                     continue
                 run = run[:keep * 4]
@@ -581,25 +820,27 @@ class MlxApp:
 
     def _draw_player_heading(
         self, state: GameState, px: float, py: float,
-        tile: int, ox: int, oy: int, radius: int,
+        tile: int, ox: int, oy: int, radius: int, show_nose: bool = True,
     ) -> None:
         """Point a nose the way Pac-Man moves, and flag a queued turn.
 
         Two separate facts, because they answer different questions. The
-        yellow nose just off the body is where he IS going. The green
-        marker at the tile edge is where he WILL go -- the buffered
-        press, which only fires once he reaches a center. Showing the
-        queued one is what makes a 90-degree turn feel acknowledged
-        rather than swallowed: the input is visibly accepted the instant
-        it is pressed, even though the corner itself has to wait.
+        yellow nose just off the body is where he IS going -- skipped
+        (``show_nose=False``) when a directional sprite already says so.
+        The green marker at the tile edge is where he WILL go -- the
+        buffered press, which only fires once he reaches a center.
+        Showing the queued one is what makes a 90-degree turn feel
+        acknowledged rather than swallowed: the input is visibly accepted
+        the instant it is pressed, even though the corner has to wait.
         """
         cx = int(ox + px * tile + tile // 2)
         cy = int(oy + py * tile + tile // 2)
         size = max(3, tile // 9)
-        nose = radius + max(1, tile // 24) + size
         facing = state.player_direction
-        self._arrow(cx + facing.dx * nose, cy + facing.dy * nose,
-                    facing, size, PLAYER)
+        if show_nose:
+            reach = radius + max(1, tile // 24) + size
+            self._arrow(cx + facing.dx * reach, cy + facing.dy * reach,
+                        facing, size, PLAYER)
         queued = state.buffered_direction
         if queued is not None and queued is not facing:
             edge = tile // 2 - 1

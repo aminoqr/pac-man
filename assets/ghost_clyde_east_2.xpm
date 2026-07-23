@@ -1,0 +1,36 @@
+/* XPM */
+static const char *ghost_clyde_east_2[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 19 1 ",
+"  c #FE9C00",
+". c #FF9C00",
+"X c #FE9D00",
+"o c #FF9D00",
+"O c #FE9C01",
+"+ c #FF9C01",
+"@ c #FE9D01",
+"# c #FF9D01",
+"$ c #0000FE",
+"% c #0100FE",
+"& c #0001FE",
+"* c blue",
+"= c #0001FF",
+"- c #FFFEFE",
+"; c #FEFFFE",
+": c #FFFEFF",
+"> c #FEFFFF",
+", c white",
+"< c None",
+/* pixels */
+"<<<<+++<<<<",
+"<<+++++++<<",
+"<++::+++::<",
+"<+::%%+::%%",
+"++::%%+::%%",
+"+++::+++::+",
+"+++++++++++",
+"+++++++++++",
+"+++++++++++",
+"+++++++++++",
+"<++<+++<++<"
+};

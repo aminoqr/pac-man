@@ -1,0 +1,38 @@
+/* XPM */
+static const char *ghost_pinky_west_2[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 21 1 ",
+"  c #0000FE",
+". c #0100FE",
+"X c #0101FE",
+"o c blue",
+"O c #0100FF",
+"+ c #0001FF",
+"@ c #FECCE6",
+"# c #FFCCE6",
+"$ c #FECDE6",
+"% c #FFCDE6",
+"& c #FECCE7",
+"* c #FFCCE7",
+"= c #FECDE7",
+"- c #FFCDE7",
+"; c #FEFEFE",
+": c #FFFEFE",
+"> c #FFFFFE",
+", c #FFFEFF",
+"< c #FEFFFF",
+"1 c white",
+"2 c None",
+/* pixels */
+"2222@@@2222",
+"22@@@@@@@22",
+"2,,@@@,,@@2",
+"XX,,@XX,,@2",
+"XX,,@XX,,@@",
+"@,,@@@,,@@@",
+"@@@@@@@@@@@",
+"@@@@@@@@@@@",
+"@@@@@@@@@@@",
+"@@@@@@@@@@@",
+"2@@2@@@2@@2"
+};

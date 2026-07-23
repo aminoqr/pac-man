@@ -1,0 +1,25 @@
+/* XPM */
+static const char *pacman_death_2[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 8 1 ",
+"  c #FEFE00",
+". c #FFFE00",
+"X c #FEFF00",
+"o c yellow",
+"O c #FFFE01",
+"+ c #FEFF01",
+"@ c #FFFF01",
+"# c None",
+/* pixels */
+"###########",
+"###########",
+"###########",
+"###########",
+"###########",
+"# ####### #",
+"  #######  ",
+"   #####   ",
+"           ",
+"#         #",
+"###  #  ###"
+};

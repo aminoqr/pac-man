@@ -73,6 +73,7 @@ class GameSession:
         config: Config,
         ghost_speed: float = 1.0,
         player_speed: float = 1.0,
+        death_pause_ticks: int = 0,
     ) -> None:
         """Build the level plan and enter level 1.
 
@@ -87,6 +88,7 @@ class GameSession:
         self.config = config
         self.ghost_speed = ghost_speed
         self.player_speed = player_speed
+        self.death_pause_ticks = death_pause_ticks
         self._seed_rng = Random(config.seed)
         self.level_plan = build_level_plan(config)
         self.level_index = 0
@@ -181,6 +183,8 @@ class GameSession:
                 seed = self._seed_rng.randint(1, _MAX_SEED)
         assert adapter is not None  # the loop either set it or raised
         wander_rng = Random(self._seed_rng.randint(0, _MAX_SEED))
-        return create_game_state(adapter, self.config, lives, score,
-                                 wander_rng, ghost_speed=self.ghost_speed,
-                                 player_speed=self.player_speed)
+        return create_game_state(
+            adapter, self.config, lives, score, wander_rng,
+            ghost_speed=self.ghost_speed, player_speed=self.player_speed,
+            death_pause_ticks=self.death_pause_ticks,
+        )

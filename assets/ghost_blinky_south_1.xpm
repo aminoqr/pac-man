@@ -1,0 +1,36 @@
+/* XPM */
+static const char *ghost_blinky_south_1[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 19 1 ",
+"  c #FE0000",
+". c red",
+"X c #FE0100",
+"o c #FF0100",
+"O c #FE0001",
+"+ c #FF0001",
+"@ c #FE0101",
+"# c #FF0101",
+"$ c #0001FE",
+"% c blue",
+"& c #0001FF",
+"* c #0101FF",
+"= c #FEFEFE",
+"- c #FFFEFE",
+"; c #FEFFFE",
+": c #FFFFFE",
+"> c #FFFEFF",
+", c white",
+"< c None",
+/* pixels */
+"<<<<OOO<<<<",
+"<<OOOOOOO<<",
+"<O--OOO--O<",
+"<----O----<",
+"O-&&-O-&&-O",
+"OO&&OOO&&OO",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OO<OO<OO<OO"
+};

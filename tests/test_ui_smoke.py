@@ -172,18 +172,23 @@ def test_keysym_translation_maps_navigation_and_typing() -> None:
     assert keysym_to_action(0x41) == (None, "A")             # uppercase A
 
 
-def _blank_app() -> "MlxApp":
-    """An MlxApp with a real-sized pixel buffer and no window.
+BLANK_W, BLANK_H = 400, 200
 
-    Full size because ``_rect`` clips against the module's WIDTH/HEIGHT
-    rather than the buffer it was handed -- a smaller buffer would be
-    written past its end.
+
+def _blank_app() -> "MlxApp":
+    """An MlxApp with a bare pixel buffer and no window.
+
+    The window is sized from the display at runtime, so drawing clips
+    against the instance's own width/height -- set them to match the
+    buffer handed over here and nothing is written past its end.
     """
     from pacman.ui import app as appmod
 
     app = appmod.MlxApp.__new__(appmod.MlxApp)
-    app.buffer = memoryview(bytearray(appmod.WIDTH * appmod.HEIGHT * 4))
-    app.size_line = appmod.WIDTH * 4
+    app.width = BLANK_W
+    app.height = BLANK_H
+    app.size_line = BLANK_W * 4
+    app.buffer = memoryview(bytearray(BLANK_W * BLANK_H * 4))
     return app
 
 
@@ -199,7 +204,7 @@ def test_direction_arrow_rasterises_a_triangle() -> None:
 
     def lit(row: int) -> int:
         return sum(
-            1 for x in range(appmod.WIDTH)
+            1 for x in range(BLANK_W)
             if buffer[row * app.size_line + x * 4 + 2]  # red channel
         )
 

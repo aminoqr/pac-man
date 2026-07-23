@@ -1,0 +1,36 @@
+/* XPM */
+static const char *ghost_inky_north_2[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 19 1 ",
+"  c blue",
+". c #0100FF",
+"X c #0001FF",
+"o c #00FEFE",
+"O c #01FEFE",
+"+ c #00FFFE",
+"@ c #01FFFE",
+"# c #00FEFF",
+"$ c #01FEFF",
+"% c cyan",
+"& c #01FFFF",
+"* c #FFFEFE",
+"= c #FEFFFE",
+"- c #FFFFFE",
+"; c #FEFEFF",
+": c #FFFEFF",
+"> c #FEFFFF",
+", c white",
+"< c None",
+/* pixels */
+"<<<<%%%<<<<",
+"<<%%%%%%%<<",
+"<%  %%%  %<",
+"<-  -%-  -<",
+"%----%----%",
+"%%--%%%--%%",
+"%%%%%%%%%%%",
+"%%%%%%%%%%%",
+"%%%%%%%%%%%",
+"%%%%%%%%%%%",
+"<%%<%%%<%%<"
+};

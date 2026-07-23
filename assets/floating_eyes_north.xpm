@@ -1,0 +1,30 @@
+/* XPM */
+static const char *floating_eyes_north[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 13 1 ",
+"  c #0100FE",
+". c #0001FE",
+"X c #0101FE",
+"o c blue",
+"O c #0001FF",
+"+ c #FEFEFE",
+"@ c #FEFFFE",
+"# c #FFFFFE",
+"$ c #FEFEFF",
+"% c #FFFEFF",
+"& c #FEFFFF",
+"* c white",
+"= c None",
+/* pixels */
+"===========",
+"===========",
+"=..===..===",
+"*..*=*..*==",
+"****=****==",
+"=**===**===",
+"===========",
+"===========",
+"===========",
+"===========",
+"==========="
+};
