@@ -1,0 +1,31 @@
+/* XPM */
+static const char *frightened_1[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 14 1 ",
+"  c #0000FE",
+". c #0100FE",
+"X c #0001FE",
+"o c #0101FE",
+"O c blue",
+"+ c #0100FF",
+"@ c #0001FF",
+"# c #0101FF",
+"$ c #FEFFFE",
+"% c #FFFFFE",
+"& c #FEFEFF",
+"* c #FEFFFF",
+"= c white",
+"- c None",
+/* pixels */
+"----OOO----",
+"--OOOOOOO--",
+"-OOOOOOOOO-",
+"-O**OOO**O-",
+"OO**OOO**OO",
+"OOOOOOOOOOO",
+"OO*OO*OO*OO",
+"O*O**O**O*O",
+"OOOOOOOOOOO",
+"OOOOOOOOOOO",
+"OO-OO-OO-OO"
+};

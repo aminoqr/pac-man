@@ -157,6 +157,7 @@ class GameState:
         rng: Random,
         ghost_speed: float = 1.0,
         player_speed: float = 1.0,
+        death_pause_ticks: int = 0,
     ) -> None:
         """Assemble a fresh level run carrying ``lives``/``score`` over.
 
@@ -203,6 +204,14 @@ class GameState:
         self.rng = rng
         self.cheats = CheatFlags()
         self.paused = False
+        # Death pause: how long the whole simulation freezes after a
+        # fatal hit so the UI can play Pac-Man's dying animation before
+        # he respawns. 0 (the default the tests rely on) keeps the old
+        # behaviour of respawning on the very same tick; the UI sets it
+        # to the animation's length. ``dying_ticks`` counts that pause
+        # down and is 0 whenever play is live.
+        self.death_pause_ticks = death_pause_ticks
+        self.dying_ticks = 0
         self.tick_count = 0
         self.level_ticks_remaining = (
             config.level_max_time * ENGINE_TICKS_PER_SECOND
@@ -342,14 +351,16 @@ def create_game_state(
     rng: Random,
     ghost_speed: float = 1.0,
     player_speed: float = 1.0,
+    death_pause_ticks: int = 0,
 ) -> GameState:
     """Build a ready-to-tick GameState for one loaded maze.
 
     The one-stop factory the session layer uses per level: placement
     via :func:`parse_grid_map`, then a GameState carrying the running
-    ``lives``/``score`` (subject VI.7: both persist across levels) and
-    the ``ghost_speed``/``player_speed`` balance (both default 1.0; the
-    UI passes them down).
+    ``lives``/``score`` (subject VI.7: both persist across levels), the
+    ``ghost_speed``/``player_speed`` balance and the ``death_pause_ticks``
+    dying-animation hold (all defaulted so the tests see the old
+    behaviour; the UI passes them down).
     """
     return GameState(
         adapter=adapter,
@@ -360,6 +371,7 @@ def create_game_state(
         rng=rng,
         ghost_speed=ghost_speed,
         player_speed=player_speed,
+        death_pause_ticks=death_pause_ticks,
     )
 
 
@@ -388,6 +400,15 @@ def update_game_state(state: GameState) -> None:
     inside pytest. Paused or finished states are no-op ticks.
     """
     if state.status is not GameStatus.RUNNING or state.paused:
+        return
+    if state.dying_ticks > 0:
+        # Frozen mid-death: no movement, no timers, no collisions --
+        # only the pause counts down, and the respawn lands the tick it
+        # reaches zero. Keeps the dying animation from being raced by
+        # ghosts or the level clock.
+        state.dying_ticks -= 1
+        if state.dying_ticks == 0:
+            _respawn(state)
         return
     state.tick_count += 1
     prev_player = state.player_tile
@@ -664,6 +685,23 @@ def _lose_life(state: GameState) -> None:
         state.lives = 0
         state.status = GameStatus.GAME_OVER
         return
+    if state.death_pause_ticks > 0:
+        # Hold everything still while the dying animation plays; the
+        # respawn happens when the pause runs out (see the countdown at
+        # the top of update_game_state).
+        state.dying_ticks = state.death_pause_ticks
+        return
+    _respawn(state)
+
+
+def _respawn(state: GameState) -> None:
+    """Put the player and ghosts back to their starting positions.
+
+    Split out of :func:`_lose_life` so the reset can be deferred until
+    after the death animation. The pellet layer is deliberately
+    untouched (playbook §6 rider: eaten pacgums stay eaten) and the
+    score never changes (subject VI.6).
+    """
     state.player_cell = state.level_data.player_spawn
     state.player_direction = PLAYER_START_DIRECTION
     state.player_move_ticks = 0

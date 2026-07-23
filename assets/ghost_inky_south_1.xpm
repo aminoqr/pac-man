@@ -1,0 +1,36 @@
+/* XPM */
+static const char *ghost_inky_south_1[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 19 1 ",
+"  c #0000FE",
+". c #0001FE",
+"X c blue",
+"o c #0001FF",
+"O c #00FEFE",
+"+ c #01FEFE",
+"@ c #00FFFE",
+"# c #01FFFE",
+"$ c #00FEFF",
+"% c #01FEFF",
+"& c cyan",
+"* c #01FFFF",
+"= c #FEFEFE",
+"- c #FEFFFE",
+"; c #FFFFFE",
+": c #FEFEFF",
+"> c #FEFFFF",
+", c white",
+"< c None",
+/* pixels */
+"<<<<@@@<<<<",
+"<<@@@@@@@<<",
+"<@,,@@@,,@<",
+"<,,,,@,,,,<",
+"@,XX,@,XX,@",
+"@@XX@@@XX@@",
+"@@@@@@@@@@@",
+"@@@@@@@@@@@",
+"@@@@@@@@@@@",
+"@@@@@@@@@@@",
+"@@<@@<@@<@@"
+};

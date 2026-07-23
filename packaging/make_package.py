@@ -31,6 +31,7 @@ SOURCE_ITEMS = (
     WHEEL_NAME,
     MLX_WHEEL_NAME,
     "scripts",
+    "assets",  # sprite icons the renderer loads at startup
 )
 
 # Directory names pruned while walking (never shipped).

@@ -1,0 +1,37 @@
+/* XPM */
+static const char *ghost_inky_west_2[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 20 1 ",
+"  c #0000FE",
+". c blue",
+"X c #0100FF",
+"o c #0001FF",
+"O c #0101FF",
+"+ c #00FEFE",
+"@ c #01FEFE",
+"# c #00FFFE",
+"$ c #01FFFE",
+"% c #00FEFF",
+"& c #01FEFF",
+"* c cyan",
+"= c #01FFFF",
+"- c #FFFEFE",
+"; c #FEFFFE",
+": c #FFFFFE",
+"> c #FEFEFF",
+", c #FFFEFF",
+"< c #FEFFFF",
+"1 c None",
+/* pixels */
+"1111***1111",
+"11*******11",
+"1;;***;;**1",
+"..;;*..;;*1",
+"..;;*..;;**",
+"*;;***;;***",
+"***********",
+"***********",
+"***********",
+"***********",
+"1**1***1**1"
+};

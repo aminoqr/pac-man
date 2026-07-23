@@ -1,0 +1,37 @@
+/* XPM */
+static const char *ghost_clyde_south_2[] = {
+/* columns rows colors chars-per-pixel */
+"11 11 20 1 ",
+"  c #FE9C00",
+". c #FF9C00",
+"X c #FE9D00",
+"o c #FF9D00",
+"O c #FE9C01",
+"+ c #FF9C01",
+"@ c #FE9D01",
+"# c #FF9D01",
+"$ c #0100FE",
+"% c #0101FE",
+"& c blue",
+"* c #0100FF",
+"= c #0101FF",
+"- c #FFFEFE",
+"; c #FEFFFE",
+": c #FFFFFE",
+"> c #FEFEFF",
+", c #FFFEFF",
+"< c #FEFFFF",
+"1 c None",
+/* pixels */
+"1111+++1111",
+"11+++++++11",
+"1+;;+++;;+1",
+"1;;;;+;;;;1",
+"+;**;+;**;+",
+"++**+++**++",
+"+++++++++++",
+"+++++++++++",
+"+++++++++++",
+"+++++++++++",
+"1++1+++1++1"
+};

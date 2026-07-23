@@ -43,6 +43,11 @@ PLAYER_SPEED = 1 / 12
 # super-pacgum always makes them easier to catch.
 GHOST_SPEED = 1 / 24
 
+# How long the game freezes after a fatal hit so the dying animation can
+# play before Pac-Man respawns. ~1.4 s at the engine tick rate, which is
+# about the arcade's own pause and enough to read every death frame.
+DEATH_PAUSE_TICKS = int(ENGINE_TICKS_PER_SECOND * 1.4)
+
 MAIN_MENU_ITEMS = ("Start Game", "View Highscores", "Instructions", "Exit")
 PAUSE_MENU_ITEMS = ("Resume", "Return to Main Menu")
 
@@ -139,6 +144,7 @@ class GameShell:
         """
         self.session = GameSession(
             self.config, ghost_speed=GHOST_SPEED, player_speed=PLAYER_SPEED,
+            death_pause_ticks=DEATH_PAUSE_TICKS,
         )
         self._accumulator_ms = 0.0
         self.screen = Screen.PLAYING
