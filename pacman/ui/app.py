@@ -22,7 +22,9 @@ unit tests in here -- the testable UI logic all lives in the shell.
 
 import logging
 import os
+import re
 import time
+from pathlib import Path
 
 from mlx import Mlx
 
@@ -47,6 +49,10 @@ WIDTH = BOARD_SIZE
 HEIGHT = BOARD_SIZE + HUD_HEIGHT
 
 TARGET_FRAME_MS = 16  # ~60 fps render cap; the sim runs at its own rate
+
+# Sprites are drawn this fraction of the tile, centered, so a full-frame
+# icon keeps a margin from the walls instead of touching every border.
+SPRITE_SCALE = 0.82
 
 # Colors as (r, g, b). Image pixels are packed BGRA (MLX/XCB little
 # endian); mlx_string_put takes a packed 0xRRGGBB int.
@@ -103,6 +109,80 @@ def _int_color(color: tuple[int, int, int]) -> int:
     return (r << 16) | (g << 8) | b
 
 
+# Where sprite icons live (repo-root/assets/sprites), and the names the
+# renderer looks for. Each is optional -- a missing/broken file falls
+# back to the drawn shape, so icons can be added one at a time.
+SPRITE_DIR = Path(__file__).resolve().parents[2] / "assets" / "sprites"
+SPRITE_NAMES = (
+    "pacman", "blinky", "pinky", "inky", "clyde", "frightened", "eyes",
+)
+
+# A parsed sprite: pixel rows, each pixel an (r, g, b) or None (clear).
+Pixel = tuple[int, int, int] | None
+Sprite = tuple[int, int, list[list[Pixel]]]  # width, height, rows
+
+# Minimal X11 color-name table for XPM `c <name>` entries (ImageMagick
+# emits these alongside #RRGGBB); unknown names fall back to magenta so a
+# gap is obvious rather than silently wrong.
+NAMED_COLORS: dict[str, tuple[int, int, int]] = {
+    "black": (0, 0, 0), "white": (255, 255, 255), "red": (255, 0, 0),
+    "green": (0, 128, 0), "blue": (0, 0, 255), "yellow": (255, 255, 0),
+    "cyan": (0, 255, 255), "magenta": (255, 0, 255), "gray": (128, 128, 128),
+    "grey": (128, 128, 128), "orange": (255, 165, 0), "pink": (255, 192, 203),
+}
+
+
+def _parse_xpm_color(token: str) -> Pixel:
+    """Turn an XPM color token into an (r, g, b) or None (transparent)."""
+    low = token.lower()
+    if low == "none":
+        return None
+    if token.startswith("#"):
+        hexits = token[1:]
+        if len(hexits) == 3:  # #RGB shorthand
+            r, g, b = (int(c * 2, 16) for c in hexits)
+            return (r, g, b)
+        step = len(hexits) // 3  # #RRGGBB or #RRRRGGGGBBBB
+        return (int(hexits[0:2], 16), int(hexits[step:step + 2], 16),
+                int(hexits[2 * step:2 * step + 2], 16))
+    return NAMED_COLORS.get(low, (255, 0, 255))
+
+
+def parse_xpm(text: str) -> Sprite:
+    """Parse XPM text into (width, height, pixel rows).
+
+    Handles the subset the game needs: the ``"cols rows ncolors cpp"``
+    header, a color table (``<chars> c <color>`` where color is
+    ``#RRGGBB``, an X11 name, or ``None`` for transparent), and the pixel
+    rows. Supports multi-character-per-pixel and a space used as a color
+    key. Raises ValueError on anything malformed so the caller can skip
+    the file and fall back to the drawn shape.
+    """
+    strings = re.findall(r'"((?:[^"\\]|\\.)*)"', text)
+    if not strings:
+        raise ValueError("no XPM string literals")
+    cols, rows, ncolors, cpp = (int(n) for n in strings[0].split()[:4])
+    color_lines = strings[1:1 + ncolors]
+    pixel_lines = strings[1 + ncolors:1 + ncolors + rows]
+    if len(color_lines) != ncolors or len(pixel_lines) != rows:
+        raise ValueError("truncated XPM body")
+
+    palette: dict[str, Pixel] = {}
+    for line in color_lines:
+        key = line[:cpp]
+        tokens = line[cpp:].split()
+        color = "None"
+        if "c" in tokens:
+            color = tokens[tokens.index("c") + 1]
+        palette[key] = _parse_xpm_color(color)
+
+    grid: list[list[Pixel]] = []
+    for line in pixel_lines:
+        grid.append([palette.get(line[i:i + cpp]) for i in
+                     range(0, cols * cpp, cpp)])
+    return cols, rows, grid
+
+
 def keysym_to_action(keysym: int) -> tuple[Action | None, str]:
     """Translate an X11 keysym into a (nav action, typed char) pair.
 
@@ -130,11 +210,17 @@ class MlxApp:
         self._static_layer: bytearray | None = None
         self._static_for: int | None = None
         self._last_ms = 0.0
+        self.sprites: dict[str, Sprite] = {}
+        # Cache of scaled opaque pixel-runs per (sprite, tile size), so a
+        # sprite is scaled and RLE-compressed once, not every frame.
+        self._sprite_runs: dict[
+            tuple[str, int], list[tuple[int, int, bytes]]
+        ] = {}
 
     # -- Lifecycle -----------------------------------------------------
 
     def setup(self) -> None:
-        """Open the window and allocate the off-screen image buffer."""
+        """Open the window, allocate the image buffer, load sprite icons."""
         self.mlx_ptr = self.mlx.mlx_init()
         self.win_ptr = self.mlx.mlx_new_window(
             self.mlx_ptr, WIDTH, HEIGHT, "42 Pac-Man",
@@ -143,6 +229,23 @@ class MlxApp:
         self.buffer, _bpp, self.size_line, _fmt = (
             self.mlx.mlx_get_data_addr(self.img_ptr)
         )
+        self._load_sprites()
+
+    def _load_sprites(self) -> None:
+        """Load any ``assets/sprites/<name>.xpm`` that exist; skip the rest.
+
+        A missing or malformed file is logged and skipped -- the entity
+        then renders as its drawn shape, so the game never depends on the
+        icons being present or valid.
+        """
+        for name in SPRITE_NAMES:
+            path = SPRITE_DIR / f"{name}.xpm"
+            if not path.exists():
+                continue
+            try:
+                self.sprites[name] = parse_xpm(path.read_text())
+            except (OSError, ValueError, IndexError) as exc:
+                logger.warning("Could not load sprite %s: %s", path, exc)
 
     def run(self) -> int:
         """Register the MLX hooks and run the blocking event loop."""
@@ -387,11 +490,94 @@ class MlxApp:
             dot(cell[0], cell[1], max(3, tile // 4), PELLET)
         for ghost in state.ghosts:
             fx, fy = state.ghost_render_pos(ghost)
-            dot(fx, fy, max(3, tile // 3), self._ghost_color(ghost))
+            if not self._blit_sprite(self._ghost_sprite(ghost), fx, fy,
+                                     tile, ox, oy):
+                dot(fx, fy, max(3, tile // 3), self._ghost_color(ghost))
         px, py = state.player_render_pos()
         radius = max(3, tile // 3)
-        dot(px, py, radius, PLAYER)
+        if not self._blit_sprite("pacman", px, py, tile, ox, oy):
+            dot(px, py, radius, PLAYER)
         self._draw_player_heading(state, px, py, tile, ox, oy, radius)
+
+    def _ghost_sprite(self, ghost: Ghost) -> str:
+        """The sprite name for a ghost given its current mode."""
+        if ghost.mode is GhostMode.EATEN:
+            return "eyes"
+        if ghost.mode is GhostMode.FRIGHTENED:
+            return "frightened"
+        return ghost.personality.name.lower()
+
+    def _blit_sprite(self, name: str, fx: float, fy: float,
+                     tile: int, ox: int, oy: int) -> bool:
+        """Composite sprite ``name`` centered on cell (fx, fy); True if drawn.
+
+        Returns False when no such sprite is loaded, so the caller draws
+        its fallback shape. The sprite is scaled to SPRITE_SCALE of the
+        tile and centered on the cell, its transparent pixels skipped, so
+        it blends over walls/pellets with a margin from the borders.
+        """
+        size = max(4, int(tile * SPRITE_SCALE))
+        runs = self._scaled_runs(name, size)
+        if runs is None:
+            return False
+        assert self.buffer is not None
+        center_x = ox + fx * tile + tile / 2
+        center_y = oy + fy * tile + tile / 2
+        left = int(center_x - size / 2)
+        top = int(center_y - size / 2)
+        for dy, dx0, run in runs:
+            y = top + dy
+            if not (0 <= y < HEIGHT):
+                continue
+            x = left + dx0
+            run_px = len(run) // 4
+            if x < 0:  # clip left
+                cut = -x
+                if cut >= run_px:
+                    continue
+                run, x, run_px = run[cut * 4:], 0, run_px - cut
+            if x + run_px > WIDTH:  # clip right
+                keep = WIDTH - x
+                if keep <= 0:
+                    continue
+                run = run[:keep * 4]
+            off = y * self.size_line + x * 4
+            self.buffer[off:off + len(run)] = run
+        return True
+
+    def _scaled_runs(self, name: str,
+                     size: int) -> list[tuple[int, int, bytes]] | None:
+        """Nearest-neighbor-scale a sprite to ``size`` px as opaque runs.
+
+        Each run is ``(dy, dx_start, bytes)`` -- a horizontal span of
+        adjacent non-transparent pixels, packed once and cached, so a
+        frame just slice-copies a handful of runs per entity.
+        """
+        sprite = self.sprites.get(name)
+        if sprite is None:
+            return None
+        cached = self._sprite_runs.get((name, size))
+        if cached is not None:
+            return cached
+        src_w, src_h, grid = sprite
+        runs: list[tuple[int, int, bytes]] = []
+        for dy in range(size):
+            row = grid[dy * src_h // size]
+            dx = 0
+            while dx < size:
+                if row[dx * src_w // size] is None:
+                    dx += 1
+                    continue
+                start, chunk = dx, bytearray()
+                while dx < size:
+                    pixel = row[dx * src_w // size]
+                    if pixel is None:
+                        break
+                    chunk += _pack(pixel)
+                    dx += 1
+                runs.append((dy, start, bytes(chunk)))
+        self._sprite_runs[(name, size)] = runs
+        return runs
 
     def _draw_player_heading(
         self, state: GameState, px: float, py: float,
