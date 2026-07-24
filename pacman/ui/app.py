@@ -81,6 +81,17 @@ SELECTED = (255, 210, 0)
 PANEL = (22, 22, 46)
 BORDER = (60, 90, 220)
 CREDIT = (120, 120, 150)
+# Letters and icons are outlined rather than sat on a slab of colour, so
+# they stay legible over the menu artwork without hiding it.
+OUTLINE = (0, 0, 0)
+
+# The eight directions an outline is stamped in, before the glyph or
+# sprite itself is drawn on top.
+_OUTLINE_OFFSETS = (
+    (-1, -1), (0, -1), (1, -1),
+    (-1, 0), (1, 0),
+    (-1, 1), (0, 1), (1, 1),
+)
 
 GHOST_COLORS = {
     GhostPersonality.BLINKY: (255, 40, 40),
@@ -135,6 +146,9 @@ DIR_NAME = {
 
 # Highest ``pacman_death_<n>`` frame the renderer will look for.
 MAX_DEATH_FRAMES = 16
+
+# Artwork stretched behind the menu/info screens, if present.
+MENU_BACKGROUND = "menu_background"
 
 # A parsed sprite: pixel rows, each pixel an (r, g, b) or None (clear).
 Pixel = tuple[int, int, int] | None
@@ -241,9 +255,20 @@ class MlxApp:
         # Cache of scaled opaque pixel-runs per (sprite, tile size), so a
         # sprite is scaled and RLE-compressed once, not every frame.
         self._sprite_runs: dict[
-            tuple[str, int], list[tuple[int, int, bytes]]
+            tuple[str, int, int], list[tuple[int, int, bytes]]
         ] = {}
         self._death_frame_count: int | None = None
+        # Whether the menu artwork is present; when it is, the UI drops
+        # its own title/credit (the picture supplies them).
+        self._has_art = False
+        # Resize guard: MLX's Vulkan swapchain cannot survive a window
+        # resize (it dies with "can't get next sw image", uncatchable in
+        # Python). The maximize button triggers exactly that, so on any
+        # configure event we rebuild the window at the fixed size --
+        # snapping the resize back instead of crashing. Debounced so the
+        # rebuild's own configure events don't loop.
+        self._rebuilding = False
+        self._last_rebuild = 0.0
 
     # -- Lifecycle -----------------------------------------------------
 
@@ -251,6 +276,18 @@ class MlxApp:
         """Open a display-sized window, allocate the buffer, load sprites."""
         self.mlx_ptr = self.mlx.mlx_init()
         self._resolve_geometry()
+        self._last_rebuild = time.monotonic()
+        self._create_surface()
+        self._load_sprites()
+
+    def _create_surface(self) -> None:
+        """Create the window + off-screen image and register its hooks.
+
+        Split out so the resize guard (:meth:`_on_configure`) can rebuild
+        a fresh window/swapchain at the fixed size. Every hook lives on
+        the window, so they are all re-registered here; the static layer
+        is invalidated because the new image is a different buffer.
+        """
         self.win_ptr = self.mlx.mlx_new_window(
             self.mlx_ptr, self.width, self.height, "42 Pac-Man",
         )
@@ -260,7 +297,11 @@ class MlxApp:
         self.buffer, _bpp, self.size_line, _fmt = (
             self.mlx.mlx_get_data_addr(self.img_ptr)
         )
-        self._load_sprites()
+        self._static_for = None  # new buffer -> rebuild the static layer
+        self.mlx.mlx_hook(self.win_ptr, 2, 1, self._on_key, None)  # KeyPress
+        self.mlx.mlx_hook(self.win_ptr, 33, 0, self._on_close, None)  # close
+        # 22 = ConfigureNotify, StructureNotifyMask = 1 << 17.
+        self.mlx.mlx_hook(self.win_ptr, 22, 1 << 17, self._on_configure, None)
 
     def _resolve_geometry(self) -> None:
         """Size the window to the display and derive the layout from it.
@@ -317,14 +358,33 @@ class MlxApp:
         return int(ticks % 3)
 
     def run(self) -> int:
-        """Register the MLX hooks and run the blocking event loop."""
+        """Set up the window and run the blocking event loop."""
         self.setup()
-        self.mlx.mlx_hook(self.win_ptr, 2, 1, self._on_key, None)  # KeyPress
-        self.mlx.mlx_hook(self.win_ptr, 33, 0, self._on_close, None)  # close
         self.mlx.mlx_loop_hook(self.mlx_ptr, self._on_loop, None)
         self._last_ms = time.monotonic() * 1000
         self.mlx.mlx_loop(self.mlx_ptr)
         return 0
+
+    def _on_configure(self, _param: object) -> None:
+        """Rebuild the window on a resize so MLX never crashes.
+
+        ConfigureNotify fires on both moves and resizes; MLX gives no new
+        size to tell them apart, and only a resize breaks the swapchain.
+        So on either we rebuild the window at the fixed size: a resize is
+        snapped back, a move is harmless. Debounced (and guarded against
+        re-entry) so the fresh window's own configure events don't loop.
+        """
+        now = time.monotonic()
+        if self._rebuilding or now - self._last_rebuild < 0.5:
+            return
+        self._rebuilding = True
+        try:
+            self.mlx.mlx_destroy_image(self.mlx_ptr, self.img_ptr)
+            self.mlx.mlx_destroy_window(self.mlx_ptr, self.win_ptr)
+            self._create_surface()
+        finally:
+            self._last_rebuild = time.monotonic()
+            self._rebuilding = False
 
     # -- MLX callbacks -------------------------------------------------
 
@@ -339,6 +399,8 @@ class MlxApp:
         self.mlx.mlx_loop_exit(self.mlx_ptr)
 
     def _on_loop(self, _param: object) -> None:
+        if self._rebuilding:  # window/image being replaced -- don't draw
+            return
         now = time.monotonic() * 1000
         elapsed = now - self._last_ms
         if elapsed < TARGET_FRAME_MS:
@@ -410,6 +472,10 @@ class MlxApp:
                 self._draw_pause_overlay()
             elif self.shell.screen is Screen.NAME_ENTRY:
                 self._draw_name_overlay()
+            elif self.shell.banner_text is not None:
+                self._draw_banner(self.shell.banner_text)
+            else:
+                self._draw_eat_score()
         self.mlx.mlx_put_image_to_window(
             self.mlx_ptr, self.win_ptr, self.img_ptr, 0, 0,
         )
@@ -417,23 +483,38 @@ class MlxApp:
     # -- Text -----------------------------------------------------------
 
     def _text(self, x: int, y: int, text: str,
-              color: tuple[int, int, int], scale: int) -> None:
-        """Draw ``text`` into the image with its top-left at (x, y)."""
-        for bx, by, bw, bh in font.runs(text, scale):
+              color: tuple[int, int, int], scale: int,
+              outline: bool = False) -> None:
+        """Draw ``text`` into the image with its top-left at (x, y).
+
+        With ``outline`` the glyphs are stamped in :data:`OUTLINE` eight
+        ways first, so the letters keep a hard edge over busy artwork
+        without needing a panel behind them.
+        """
+        blocks = list(font.runs(text, scale))
+        if outline:
+            edge = max(1, scale // 2)
+            for ox, oy in _OUTLINE_OFFSETS:
+                dx, dy = ox * edge, oy * edge
+                for bx, by, bw, bh in blocks:
+                    self._rect(x + bx + dx, y + by + dy, bw, bh, OUTLINE)
+        for bx, by, bw, bh in blocks:
             self._rect(x + bx, y + by, bw, bh, color)
 
     def _text_center(self, y: int, text: str,
-                     color: tuple[int, int, int], scale: int) -> None:
+                     color: tuple[int, int, int], scale: int,
+                     outline: bool = False) -> None:
         """Draw ``text`` horizontally centered in the window."""
         self._text((self.width - font.text_width(text, scale)) // 2, y,
-                   text, color, scale)
+                   text, color, scale, outline)
 
     # -- Menu / info screens ---------------------------------------------
 
     def _draw_menu_screen(self) -> None:
         """Background, frame and credit shared by every non-game screen."""
-        self._fill(BACKGROUND)
-        self._draw_frame()
+        self._has_art = self._draw_background()
+        if not self._has_art:
+            self._fill(BACKGROUND)
         if self.shell.screen is Screen.MAIN_MENU:
             self._draw_main_menu()
         elif self.shell.screen is Screen.INSTRUCTIONS:
@@ -441,18 +522,28 @@ class MlxApp:
         else:
             self._draw_info_page("HIGH SCORES",
                                  self.shell.highscore_lines())
-        self._draw_credit()
+        # The artwork carries its own title and credit; drawing ours on
+        # top of it would only double up.
+        if not self._has_art:
+            self._draw_credit()
 
-    def _draw_frame(self) -> None:
-        """A thin arcade border inset from the window edge."""
-        pad = self.ui * 4
-        thick = max(2, self.ui)
-        self._rect(pad, pad, self.width - 2 * pad, thick, BORDER)
-        self._rect(pad, self.height - pad - thick,
-                   self.width - 2 * pad, thick, BORDER)
-        self._rect(pad, pad, thick, self.height - 2 * pad, BORDER)
-        self._rect(self.width - pad - thick, pad, thick,
-                   self.height - 2 * pad, BORDER)
+    def _draw_background(self) -> bool:
+        """Fill the window with the menu artwork; False if it is absent.
+
+        Stretched to the whole window and cached as runs, so the cost is
+        paid once rather than every frame. Menu text is drawn over it
+        with a dark scrim behind each block so it stays readable.
+        """
+        runs = self._scaled_runs(MENU_BACKGROUND, self.width, self.height)
+        if runs is None:
+            return False
+        assert self.buffer is not None
+        for dy, dx0, run in runs:
+            if not (0 <= dy < self.height):
+                continue
+            off = dy * self.size_line + dx0 * 4
+            self.buffer[off:off + len(run)] = run
+        return True
 
     def _draw_credit(self) -> None:
         """The authors, in the bottom-right corner."""
@@ -467,9 +558,10 @@ class MlxApp:
         """Title, the sprite-marked selection list, and a score preview."""
         title_scale = self.ui * 3
         y = self.height // 8
-        self._text_center(y, "PAC-MAN", PLAYER, title_scale)
-        y += font.text_height(title_scale) + self.ui * 4
-        self._text_center(y, "GHOSTS!  MORE GHOSTS!", DIM, self.ui)
+        if not self._has_art:  # the artwork already says "PACMAN"
+            self._text_center(y, "PAC-MAN", PLAYER, title_scale, True)
+            y += font.text_height(title_scale) + self.ui * 4
+            self._text_center(y, "GHOSTS!  MORE GHOSTS!", DIM, self.ui, True)
 
         # Selection list, centered as a block so the marker has room.
         item_scale = self.ui * 2
@@ -480,7 +572,7 @@ class MlxApp:
         for index, item in enumerate(MAIN_MENU_ITEMS):
             chosen = index == self.shell.menu_index
             self._text(left, y, item, SELECTED if chosen else TEXT,
-                       item_scale)
+                       item_scale, True)
             if chosen:
                 self._draw_marker(left, y, item_scale)
             y += step
@@ -494,28 +586,32 @@ class MlxApp:
         name = self._first_loaded(
             ["pacman_east_1", "pacman_east", "full_pacman", "pacman"]
         )
-        if name is None or not self._blit_sprite_px(name, cx, y, size):
-            self._text(cx, y, ">", SELECTED, scale)
+        drawn = name is not None and self._blit_sprite_px(
+            name, cx, y, size, outline=True,
+        )
+        if not drawn:
+            self._text(cx, y, ">", SELECTED, scale, True)
 
     def _draw_score_preview(self, y: int) -> None:
         """Top few scores under the menu, so the board is visible at once."""
-        self._text_center(y, "- HIGH SCORES -", DIM, self.ui)
+        self._text_center(y, "- HIGH SCORES -", DIM, self.ui, True)
         y += font.text_height(self.ui) + self.ui * 3
         for line in self.shell.highscore_lines()[:5]:
-            self._text_center(y, line, TEXT, self.ui)
+            self._text_center(y, line, TEXT, self.ui, True)
             y += font.text_height(self.ui) + self.ui * 2
 
     def _draw_info_page(self, title: str, lines: tuple[str, ...]) -> None:
         """A titled page of centered lines (instructions / highscores)."""
         title_scale = self.ui * 2
         y = self.height // 10
-        self._text_center(y, title, PLAYER, title_scale)
+        self._text_center(y, title, PLAYER, title_scale, True)
         y += font.text_height(title_scale) + self.ui * 8
         for line in lines:
-            self._text_center(y, line, TEXT, self.ui)
+            self._text_center(y, line, TEXT, self.ui, True)
             y += font.text_height(self.ui) + self.ui * 3
         self._text_center(self.height - self.ui * 20,
-                          "PRESS ENTER OR ESC TO GO BACK", DIM, self.ui)
+                          "PRESS ENTER OR ESC TO GO BACK", DIM, self.ui,
+                          True)
 
     # -- In-game HUD and overlays ----------------------------------------
 
@@ -562,10 +658,46 @@ class MlxApp:
         for index, item in enumerate(PAUSE_MENU_ITEMS):
             chosen = index == self.shell.pause_index
             self._text(left, y, item, SELECTED if chosen else TEXT,
-                       item_scale)
+                       item_scale, True)
             if chosen:
                 self._draw_marker(left, y, item_scale)
             y += font.text_height(item_scale) + self.ui * 7
+
+    def _draw_eat_score(self) -> None:
+        """Show what a caught ghost scored, over the spot it was caught.
+
+        Only while the engine's eat pause holds everything still, which
+        is what gives the number time to be read (arcade behaviour).
+        """
+        if self.shell.session is None:
+            return
+        state = self.shell.session.state
+        if state.eaten_ticks <= 0:
+            return
+        tile, ox, oy = self._geometry(state)
+        cx = ox + state.last_eat_cell[0] * tile + tile // 2
+        cy = oy + state.last_eat_cell[1] * tile + tile // 2
+        text = str(state.last_eat_score)
+        scale = max(2, self.ui)
+        self._text(cx - font.text_width(text, scale) // 2,
+                   cy - font.text_height(scale) // 2,
+                   text, EYES, scale, True)
+
+    def _draw_banner(self, text: str) -> None:
+        """An interstitial word over the still board (READY! and friends).
+
+        Deliberately no dimming veil: the arcade leaves the maze fully
+        visible so you can read the board during the pause. The message
+        sits just below the middle, clear of the player's spawn.
+        """
+        scale = self.ui * 3
+        y = self.board_y + self.board // 2 + font.text_height(scale)
+        width = font.text_width(text, scale)
+        pad = self.ui * 4
+        self._rect((self.width - width) // 2 - pad, y - pad,
+                   width + 2 * pad, font.text_height(scale) + 2 * pad,
+                   BACKGROUND)
+        self._text_center(y, text, SELECTED, scale)
 
     def _draw_name_overlay(self) -> None:
         self._veil()
@@ -605,11 +737,19 @@ class MlxApp:
         self.buffer[:] = self._static_layer
 
     def _build_static_layer(self, state: GameState) -> None:
-        """Render background + walls + sealed blocks once for this level."""
+        """Render background + walls + sealed blocks once for this level.
+
+        Walls use the arcade "blue tube" style: instead of a flat line on
+        the cell boundary, every corridor traces a line inset from each
+        of its wall edges, so a wall shared by two corridors becomes two
+        parallel lines and corners round off -- all derived from the wall
+        bitmask, no artwork needed.
+        """
         self._fill(BACKGROUND)
         adapter = state.adapter
         tile, ox, oy = self._geometry(state)
-        thickness = max(1, tile // 12)
+        thick = max(2, tile // 7)
+        radius = thick // 2
         for y in range(adapter.height):
             for x in range(adapter.width):
                 left, top = ox + x * tile, oy + y * tile
@@ -617,19 +757,43 @@ class MlxApp:
                     self._rect(left, top, tile, tile, BLOCK)
                     continue
                 moves = adapter.get_valid_moves(x, y)
+                right, bottom = left + tile, top + tile
                 if Direction.NORTH not in moves:
-                    self._rect(left, top, tile, thickness, WALL)
+                    self._wall_line(left, top, right, top, radius)
                 if Direction.SOUTH not in moves:
-                    self._rect(left, top + tile - thickness, tile,
-                               thickness, WALL)
+                    self._wall_line(left, bottom, right, bottom, radius)
                 if Direction.WEST not in moves:
-                    self._rect(left, top, thickness, tile, WALL)
+                    self._wall_line(left, top, left, bottom, radius)
                 if Direction.EAST not in moves:
-                    self._rect(left + tile - thickness, top, thickness,
-                               tile, WALL)
+                    self._wall_line(right, top, right, bottom, radius)
         assert self.buffer is not None
         self._static_layer = bytearray(self.buffer)
         self._static_for = id(state.adapter)
+
+    def _wall_line(self, x0: int, y0: int, x1: int, y1: int,
+                   radius: int) -> None:
+        """Draw one wall as a rounded stroke centred on a cell edge.
+
+        A single line, ``2*radius+1`` thick, with a filled disc at each
+        end. That is all the wall logic needs: collinear edges share an
+        endpoint so their discs and bars merge into a continuous line;
+        two edges meeting at a cell corner share a disc, which rounds the
+        corner; and an isolated wall edge is just a bar with two rounded
+        caps -- so every wall reads the same, with no doubling, no
+        floating pills, and no neighbour look-ups.
+        """
+        if y0 == y1:  # horizontal edge
+            self._rect(x0, y0 - radius, x1 - x0, 2 * radius + 1, WALL)
+        else:  # vertical edge
+            self._rect(x0 - radius, y0, 2 * radius + 1, y1 - y0, WALL)
+        self._disc(x0, y0, radius)
+        self._disc(x1, y1, radius)
+
+    def _disc(self, cx: int, cy: int, radius: int) -> None:
+        """Fill a solid circle (rounds a wall joint or end)."""
+        for dy in range(-radius, radius + 1):
+            dx = int((radius * radius - dy * dy) ** 0.5)
+            self._rect(cx - dx, cy + dy, 2 * dx + 1, 1, WALL)
 
     def _draw_dynamic(self, state: GameState) -> None:
         """Draw pellets (fixed) and the smoothly-moving ghosts + player.
@@ -650,14 +814,15 @@ class MlxApp:
             cy = int(oy + fy * tile + tile // 2)
             self._rect(cx - size, cy - size, size * 2, size * 2, color)
 
+        self._draw_spawn_markers(state, tile, ox, oy)
         for cell in state.pacgum_cells:
             dot(cell[0], cell[1], max(1, tile // 10), PELLET)
         for cell in state.super_pacgum_cells:
             dot(cell[0], cell[1], max(3, tile // 4), PELLET)
-        # Ghosts vanish while Pac-Man dies, as in the arcade -- nothing
-        # should be moving or crowding the frame during the animation.
-        dying = state.dying_ticks > 0
-        for ghost in [] if dying else state.ghosts:
+        # Ghosts stay on screen through the caught hold (so you see who
+        # got you), then vanish once the dying animation itself begins.
+        hide_ghosts = state.dying_ticks > 0 and not state.is_caught_hold
+        for ghost in [] if hide_ghosts else state.ghosts:
             fx, fy = state.ghost_render_pos(ghost)
             name = self._first_loaded(self._ghost_sprite(ghost))
             if name is None or not self._blit_sprite(name, fx, fy,
@@ -695,11 +860,16 @@ class MlxApp:
     def _player_sprite(self, state: GameState) -> list[str]:
         """Candidate sprite names for Pac-Man, best match first.
 
-        While the death pause runs, the dying frames take over: the
-        elapsed fraction of the pause picks the frame, so the sequence
-        plays once, in order, however many frames were drawn.
+        A catch shows in two beats: during the caught hold he keeps his
+        normal facing sprite, frozen, so it registers; then the dying
+        frames play once, in order, across the animation portion of the
+        pause -- however many were drawn.
         """
         if state.dying_ticks > 0:
+            if state.is_caught_hold:
+                facing = DIR_NAME[state.player_direction]
+                return [f"pacman_{facing}_1", f"pacman_{facing}",
+                        "full_pacman", "pacman"]
             return [self._death_sprite(state)]
         facing = DIR_NAME[state.player_direction]
         phase = self._player_anim_phase()
@@ -721,13 +891,17 @@ class MlxApp:
         return self._death_frame_count
 
     def _death_sprite(self, state: GameState) -> str:
-        """The dying frame for how far the death pause has progressed."""
+        """The dying frame for how far the animation has progressed.
+
+        Mapped across the animation portion only (after the caught hold),
+        so the frames span the whole spin rather than being rushed.
+        """
         frames = self._death_frames()
         if frames == 0:
             return "full_pacman"
-        total = max(1, state.death_pause_ticks)
-        elapsed = total - state.dying_ticks
-        index = min(frames, elapsed * frames // total + 1)
+        anim = max(1, state.death_anim_ticks)
+        elapsed = max(0, anim - state.dying_ticks)
+        index = min(frames, elapsed * frames // anim + 1)
         return f"pacman_death_{index}"
 
     def _first_loaded(self, candidates: list[str]) -> str | None:
@@ -753,17 +927,26 @@ class MlxApp:
                                     int(center_y - size / 2), size)
 
     def _blit_sprite_px(self, name: str, left: int, top: int,
-                        size: int) -> bool:
+                        size: int, outline: bool = False) -> bool:
         """Composite sprite ``name`` at a pixel position; True if drawn.
 
         The pixel-space entry point (menus use it for the selection
         marker); returns False when the sprite is not loaded so callers
-        can fall back. Runs are clipped to the image bounds.
+        can fall back. Runs are clipped to the image bounds. With
+        ``outline`` the silhouette is stamped in :data:`OUTLINE` eight
+        ways first, matching the outlined lettering beside it.
         """
-        runs = self._scaled_runs(name, size)
+        runs = self._scaled_runs(name, size, size)
         if runs is None:
             return False
         assert self.buffer is not None
+        if outline:
+            edge = max(1, size // 12)
+            for ox, oy in _OUTLINE_OFFSETS:
+                for dy, dx0, run in runs:
+                    self._rect(left + dx0 + ox * edge,
+                               top + dy + oy * edge,
+                               len(run) // 4, 1, OUTLINE)
         for dy, dx0, run in runs:
             y = top + dy
             if not (0 <= y < self.height):
@@ -784,38 +967,40 @@ class MlxApp:
             self.buffer[off:off + len(run)] = run
         return True
 
-    def _scaled_runs(self, name: str,
-                     size: int) -> list[tuple[int, int, bytes]] | None:
-        """Nearest-neighbor-scale a sprite to ``size`` px as opaque runs.
+    def _scaled_runs(self, name: str, width: int,
+                     height: int) -> list[tuple[int, int, bytes]] | None:
+        """Nearest-neighbor-scale a sprite to width x height as runs.
 
         Each run is ``(dy, dx_start, bytes)`` -- a horizontal span of
         adjacent non-transparent pixels, packed once and cached, so a
-        frame just slice-copies a handful of runs per entity.
+        frame just slice-copies a handful of runs per entity. Non-square
+        scaling is what lets the menu artwork stretch to fill the window
+        while sprites stay square.
         """
         sprite = self.sprites.get(name)
         if sprite is None:
             return None
-        cached = self._sprite_runs.get((name, size))
+        cached = self._sprite_runs.get((name, width, height))
         if cached is not None:
             return cached
         src_w, src_h, grid = sprite
         runs: list[tuple[int, int, bytes]] = []
-        for dy in range(size):
-            row = grid[dy * src_h // size]
+        for dy in range(height):
+            row = grid[dy * src_h // height]
             dx = 0
-            while dx < size:
-                if row[dx * src_w // size] is None:
+            while dx < width:
+                if row[dx * src_w // width] is None:
                     dx += 1
                     continue
                 start, chunk = dx, bytearray()
-                while dx < size:
-                    pixel = row[dx * src_w // size]
+                while dx < width:
+                    pixel = row[dx * src_w // width]
                     if pixel is None:
                         break
                     chunk += _pack(pixel)
                     dx += 1
                 runs.append((dy, start, bytes(chunk)))
-        self._sprite_runs[(name, size)] = runs
+        self._sprite_runs[(name, width, height)] = runs
         return runs
 
     def _draw_player_heading(
@@ -843,9 +1028,40 @@ class MlxApp:
                         facing, size, PLAYER)
         queued = state.buffered_direction
         if queued is not None and queued is not facing:
-            edge = tile // 2 - 1
-            self._arrow(cx + queued.dx * edge, cy + queued.dy * edge,
-                        queued, size, INTENT)
+            # Clear of the sprite entirely. An arrow widens BACKWARD from
+            # its apex, so an apex on the tile edge buried the body under
+            # Pac-Man (who fills SPRITE_SCALE of the tile) and the marker
+            # effectively disappeared. Push the apex a whole half-tile
+            # further out, size it up, and outline it so it reads against
+            # both the maze and the player.
+            marker = max(5, tile // 6)
+            edge = tile // 2 + marker
+            ax = cx + queued.dx * edge
+            ay = cy + queued.dy * edge
+            self._arrow(ax, ay, queued, marker + 1, OUTLINE)
+            self._arrow(ax, ay, queued, marker, INTENT)
+
+    def _draw_spawn_markers(self, state: GameState, tile: int,
+                            ox: int, oy: int) -> None:
+        """Ring each ghost's home corner in that ghost's own colour.
+
+        Shows at a glance whose corner is whose -- where a ghost scatters
+        back to and where its eyes return when eaten. Drawn as a hollow
+        square under everything else so it never reads as something
+        edible.
+        """
+        thickness = max(1, tile // 14)
+        inset = tile // 6
+        span = tile - 2 * inset
+        for ghost in state.ghosts:
+            hx, hy = ghost.home_corner
+            color = GHOST_COLORS[ghost.personality]
+            left = ox + hx * tile + inset
+            top = oy + hy * tile + inset
+            self._rect(left, top, span, thickness, color)
+            self._rect(left, top + span - thickness, span, thickness, color)
+            self._rect(left, top, thickness, span, color)
+            self._rect(left + span - thickness, top, thickness, span, color)
 
     def _ghost_color(self, ghost: Ghost) -> tuple[int, int, int]:
         if ghost.mode is GhostMode.EATEN:

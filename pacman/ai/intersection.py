@@ -31,7 +31,7 @@ from random import Random
 
 from pacman.ai.ghost import Cell
 from pacman.maze.adapter import Direction, MazeAdapter
-from pacman.pathfinding.search import astar_path
+from pacman.pathfinding.search import astar_path, distance_map
 
 # Up > Left > Down > Right (TESTING_PLAYBOOK.md §4.3): fixed so every
 # tie resolves identically on every run -- determinism is a feature.
@@ -115,32 +115,48 @@ def choose_target_exit(
     current_direction: Direction,
     target: Cell,
 ) -> Direction:
-    """First hop of a true shortest path toward ``target`` (SCATTER/CHASE).
+    """Best legal exit toward ``target`` by TRUE path distance.
 
-    The Milestone-3 upgrade the design anticipated (REFERENCE.md §3.7):
-    the wall-blind greedy rule (``choose_exit``) gets trapped in local
-    minima on braided wheel mazes -- their many micro-loops let a ghost
-    orbit a wall forever while straight-line distance never improves --
-    so ghosts navigate by real graph distance instead. The target may
-    be a phantom tile (outside the maze, or inside a wall -- targets are
-    never clamped, REFERENCE.md §4.4), so it is first resolved to the
-    nearest walkable anchor; A* then gives the next hop, which strictly
-    decreases true path distance every re-decision, so no orbiting.
+    The arcade rule with a wall-aware metric. Each candidate is a legal
+    exit that is NOT the reverse of travel (``legal_exits``, dead-end
+    hatch included); each is scored by the real graph distance from the
+    tile it leads to, and the smallest wins, ties broken Up > Left >
+    Down > Right. The target may be a phantom tile (outside the maze or
+    inside a wall -- targets are never clamped, REFERENCE.md §4.4), so
+    it is first resolved to the nearest walkable anchor.
 
-    Personalities are unchanged: each ghost still pursues its own target
-    tile (Blinky the player, Pinky 4-ahead, ...) -- only the *how* of
-    getting there is now path-optimal. Like the EATEN eyes it may
-    reverse (a chaser doubling back toward the player is correct), and
-    it falls back to the greedy rule if no path exists, staying total.
+    Three properties this gets right, each one a bug in a simpler rule:
+
+    * **No reversing.** Taking a raw shortest-path hop instead lets a
+      ghost double back the instant the player moves, so it jitters on
+      the spot; forbidding the reverse is what produces the committed,
+      readable arcade pursuit (and is what gives the player any escape).
+    * **Never stalls.** Scoring the *exits* rather than pathing to the
+      anchor means a ghost sitting on its own target still has to pick
+      an exit and keep going -- it circles, as the arcade ghosts do,
+      instead of parking or twitching between two tiles.
+    * **No wall traps.** Straight-line distance (``choose_exit``) sinks
+      into local minima on these braided mazes; graph distance cannot
+      (REFERENCE.md §3.7).
+
+    Personalities are untouched -- each ghost still pursues its own
+    target tile; only the route-finding is shared.
     """
+    exits = legal_exits(adapter, cell, current_direction)
+    if not exits:
+        return current_direction
     anchor = adapter.nearest_walkable(*target)
-    result = astar_path(adapter, cell, anchor)
-    if result.path is None or len(result.path) < 2:
-        return choose_exit(adapter, cell, current_direction, target)
-    next_cell = result.path[1]
-    return _DELTA_TO_DIRECTION[
-        (next_cell[0] - cell[0], next_cell[1] - cell[1])
-    ]
+    distances = distance_map(adapter, anchor)
+    best = exits[0]
+    best_distance: int | None = None
+    for candidate in exits:
+        step_cell = (cell[0] + candidate.dx, cell[1] + candidate.dy)
+        reach = distances.get(step_cell)
+        if reach is None:  # walled off from the target entirely
+            continue
+        if best_distance is None or reach < best_distance:
+            best, best_distance = candidate, reach
+    return best
 
 
 def choose_eaten_exit(

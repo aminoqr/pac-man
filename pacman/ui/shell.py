@@ -37,16 +37,40 @@ MS_PER_TICK = 1000 / ENGINE_TICKS_PER_SECOND
 # control, with a tile center -- i.e. a turn opportunity -- every 200 ms.
 PLAYER_SPEED = 1 / 12
 
-# Ghosts take 24 ticks a tile = 2.5 tiles/sec, holding the classic
-# nimble-player / calmer-ghosts balance at half the player's pace.
-# Frightened ghosts halve that again (``mode_speed_multiplier``), so a
-# super-pacgum always makes them easier to catch.
-GHOST_SPEED = 1 / 24
+# Ghosts take 16 ticks a tile = 3.75 tiles/sec, i.e. 75% of the player.
+#
+# The arcade's own level-1 numbers are 80% of base speed for Pac-Man and
+# 75% for the ghosts -- so there they run at ~94% of his pace. Matching
+# that number here would play HARDER than the original, not truer to it:
+# arcade ghosts navigate by wall-blind straight-line distance and lose
+# ground every time a corridor bends the wrong way, whereas these ones
+# path perfectly. Trading that accuracy back as a speed handicap is what
+# reproduces the original's actual feel -- caught only when cornered.
+#
+# Frightened ghosts halve this again and eaten eyes double it
+# (``mode_speed_multiplier``), matching the arcade's per-mode structure.
+GHOST_SPEED = 1 / 16
 
-# How long the game freezes after a fatal hit so the dying animation can
-# play before Pac-Man respawns. ~1.4 s at the engine tick rate, which is
-# about the arcade's own pause and enough to read every death frame.
-DEATH_PAUSE_TICKS = int(ENGINE_TICKS_PER_SECOND * 1.4)
+# The catch, in two beats like the arcade. First a still hold on the
+# instant of capture -- Pac-Man normal, the ghost still on him -- so it
+# registers; then the dying animation spins him away. The whole thing
+# freezes the game; the respawn (and READY!) follow when it ends.
+CAUGHT_PAUSE_TICKS = int(ENGINE_TICKS_PER_SECOND * 0.8)
+DEATH_ANIMATION_TICKS = int(ENGINE_TICKS_PER_SECOND * 1.7)
+DEATH_PAUSE_TICKS = CAUGHT_PAUSE_TICKS + DEATH_ANIMATION_TICKS
+
+# The arcade stops dead for a beat when a ghost is caught, showing
+# what it scored, before play carries on from where it left off.
+EAT_PAUSE_TICKS = int(ENGINE_TICKS_PER_SECOND * 0.7)
+
+# Interstitial banners, arcade style: a beat to read the board before
+# anything moves. Shown at the start of a life/level and between levels.
+READY_TEXT = "READY!"
+READY_MS = 1900.0
+LEVEL_CLEARED_TEXT = "LEVEL CLEARED!"
+LEVEL_CLEARED_MS = 1500.0
+GAME_START_TEXT = "GET READY!"
+GAME_START_MS = 1500.0
 
 MAIN_MENU_ITEMS = ("Start Game", "View Highscores", "Instructions", "Exit")
 PAUSE_MENU_ITEMS = ("Resume", "Return to Main Menu")
@@ -133,6 +157,30 @@ class GameShell:
         self.final_score = 0
         self.final_won = False
         self._accumulator_ms = 0.0
+        # Interstitials: the arcade never drops you straight into play.
+        # While a banner is up the simulation does not tick at all, so
+        # the board sits still under the message. Queued because some
+        # moments show two in a row (level cleared, then READY!).
+        self.banner_text: str | None = None
+        self._banner_ms = 0.0
+        self._banner_queue: list[tuple[str, float]] = []
+        self._was_dying = False
+        self._last_level = 0
+
+    # -- Interstitial banners -------------------------------------------
+
+    def _queue_banner(self, *banners: tuple[str, float]) -> None:
+        """Line up one or more (text, milliseconds) interstitials."""
+        self._banner_queue.extend(banners)
+        if self.banner_text is None:
+            self._next_banner()
+
+    def _next_banner(self) -> None:
+        """Show the next queued banner, or clear and let play resume."""
+        if self._banner_queue:
+            self.banner_text, self._banner_ms = self._banner_queue.pop(0)
+        else:
+            self.banner_text, self._banner_ms = None, 0.0
 
     # -- Transitions ---------------------------------------------------
 
@@ -145,11 +193,20 @@ class GameShell:
         self.session = GameSession(
             self.config, ghost_speed=GHOST_SPEED, player_speed=PLAYER_SPEED,
             death_pause_ticks=DEATH_PAUSE_TICKS,
+            eat_pause_ticks=EAT_PAUSE_TICKS,
+            caught_pause_ticks=CAUGHT_PAUSE_TICKS,
         )
         self._accumulator_ms = 0.0
+        self.banner_text, self._banner_ms = None, 0.0
+        self._banner_queue.clear()
+        self._was_dying = False
+        self._last_level = self.session.level_number
         self.screen = Screen.PLAYING
         if self.session.status is not SessionStatus.RUNNING:
             self._end_game()
+        else:
+            self._queue_banner((GAME_START_TEXT, GAME_START_MS),
+                               (READY_TEXT, READY_MS))
 
     def _end_game(self) -> None:
         """Capture the final result and open the name-entry screen."""
@@ -274,8 +331,27 @@ class GameShell:
         (subject VI.7). One ``session.tick()`` per :data:`MS_PER_TICK`
         of accumulated real time (REFERENCE.md §2.1); the tick that
         finishes a game hands off to the name-entry flow at once.
+
+        An interstitial banner freezes the simulation entirely for its
+        duration, so READY! and LEVEL CLEARED! are read against a still
+        board rather than flashing over play already in progress.
         """
         if self.screen is not Screen.PLAYING or self.session is None:
+            return
+        if self.banner_text is not None:
+            # Carry leftover time from one banner into the next, so a
+            # long frame (or a queued pair) does not strand a message on
+            # screen. Never ticks in the same call: the accumulator is
+            # reset so play resumes cleanly instead of fast-forwarding
+            # through the time spent reading.
+            remaining = elapsed_ms
+            while self.banner_text is not None and remaining > 0:
+                if self._banner_ms > remaining:
+                    self._banner_ms -= remaining
+                    break
+                remaining -= self._banner_ms
+                self._next_banner()
+            self._accumulator_ms = 0.0
             return
         self._accumulator_ms += elapsed_ms
         while self._accumulator_ms >= MS_PER_TICK:
@@ -283,7 +359,32 @@ class GameShell:
             self.session.tick()
             if self.session.status is not SessionStatus.RUNNING:
                 self._end_game()
-                break
+                return
+            if self._note_interstitial_moments():
+                return
+
+    def _note_interstitial_moments(self) -> bool:
+        """Queue a banner if this tick just crossed a notable moment.
+
+        Two moments the arcade always punctuates: finishing a level, and
+        coming back after being caught (once the dying animation has
+        run its course). Returns True when a banner was raised, so the
+        caller stops ticking immediately.
+        """
+        assert self.session is not None
+        dying = self.session.state.dying_ticks > 0
+        respawned = self._was_dying and not dying
+        self._was_dying = dying
+
+        if self.session.level_number != self._last_level:
+            self._last_level = self.session.level_number
+            self._queue_banner((LEVEL_CLEARED_TEXT, LEVEL_CLEARED_MS),
+                               (READY_TEXT, READY_MS))
+            return True
+        if respawned:
+            self._queue_banner((READY_TEXT, READY_MS))
+            return True
+        return False
 
     # -- Render-facing views -------------------------------------------
 

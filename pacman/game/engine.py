@@ -158,6 +158,8 @@ class GameState:
         ghost_speed: float = 1.0,
         player_speed: float = 1.0,
         death_pause_ticks: int = 0,
+        eat_pause_ticks: int = 0,
+        caught_pause_ticks: int = 0,
     ) -> None:
         """Assemble a fresh level run carrying ``lives``/``score`` over.
 
@@ -211,7 +213,19 @@ class GameState:
         # to the animation's length. ``dying_ticks`` counts that pause
         # down and is 0 whenever play is live.
         self.death_pause_ticks = death_pause_ticks
+        # Of that pause, the first ``caught_pause_ticks`` are a still hold
+        # -- Pac-Man in his normal sprite, the ghost that got him still on
+        # screen -- so the player registers the catch BEFORE the dying
+        # animation begins. The remainder plays the animation.
+        self.caught_pause_ticks = caught_pause_ticks
         self.dying_ticks = 0
+        # Eat pause: the arcade stops dead for a beat when a ghost is
+        # caught, showing what it scored, before play resumes. 0 (the
+        # tests' default) keeps the old uninterrupted behaviour.
+        self.eat_pause_ticks = eat_pause_ticks
+        self.eaten_ticks = 0
+        self.last_eat_score = 0
+        self.last_eat_cell: Cell = (0, 0)
         self.tick_count = 0
         self.level_ticks_remaining = (
             config.level_max_time * ENGINE_TICKS_PER_SECOND
@@ -306,6 +320,26 @@ class GameState:
         ticks = max(self.level_ticks_remaining, 0)
         return -(-ticks // ENGINE_TICKS_PER_SECOND)
 
+    @property
+    def death_anim_ticks(self) -> int:
+        """Ticks of the death pause given to the dying animation.
+
+        The whole pause minus the initial caught-hold; the renderer maps
+        the death frames across this span.
+        """
+        return max(0, self.death_pause_ticks - self.caught_pause_ticks)
+
+    @property
+    def is_caught_hold(self) -> bool:
+        """True during the still beat right after being caught.
+
+        The first ``caught_pause_ticks`` of the death pause, before the
+        animation starts: Pac-Man is shown normally and the ghosts stay
+        on screen. False once the animation is playing, and whenever play
+        is live.
+        """
+        return self.dying_ticks > self.death_anim_ticks
+
 
 @dataclass
 class LevelData:
@@ -352,6 +386,8 @@ def create_game_state(
     ghost_speed: float = 1.0,
     player_speed: float = 1.0,
     death_pause_ticks: int = 0,
+    eat_pause_ticks: int = 0,
+    caught_pause_ticks: int = 0,
 ) -> GameState:
     """Build a ready-to-tick GameState for one loaded maze.
 
@@ -372,6 +408,8 @@ def create_game_state(
         ghost_speed=ghost_speed,
         player_speed=player_speed,
         death_pause_ticks=death_pause_ticks,
+        eat_pause_ticks=eat_pause_ticks,
+        caught_pause_ticks=caught_pause_ticks,
     )
 
 
@@ -409,6 +447,12 @@ def update_game_state(state: GameState) -> None:
         state.dying_ticks -= 1
         if state.dying_ticks == 0:
             _respawn(state)
+        return
+    if state.eaten_ticks > 0:
+        # Caught a ghost: hold everything for a beat so the score reads,
+        # then carry on exactly where play left off (no reset here --
+        # unlike a death, nothing moves back to spawn).
+        state.eaten_ticks -= 1
         return
     state.tick_count += 1
     prev_player = state.player_tile
@@ -666,6 +710,14 @@ def _resolve_collisions(
     for ghost in frightened_hits:
         ghost.enter_eaten()
         state.score += state.config.points_per_ghost
+    if frightened_hits and state.eat_pause_ticks > 0:
+        # Freeze on the catch, and remember what it scored and where so
+        # the UI can show the value over the spot (arcade behaviour).
+        state.eaten_ticks = state.eat_pause_ticks
+        state.last_eat_score = (
+            state.config.points_per_ghost * len(frightened_hits)
+        )
+        state.last_eat_cell = state.ghost_tile(frightened_hits[0])
     return False
 
 

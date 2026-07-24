@@ -132,28 +132,47 @@ def test_frightened_draws_are_reproducible_and_never_reverse() -> None:
 # --- Path-based navigation (Milestone 3 upgrade, choose_target_exit) -----
 
 def test_target_exit_steps_toward_the_target_arm() -> None:
+    """The reachable arm wins on true path distance."""
     adapter = make_adapter(PLUS_3x3)
-    # Each arm's tile makes that arm the shortest first hop.
+    # Heading East (so West is the forbidden reverse), the north arm is
+    # the target: North leads straight onto it, the others are farther.
     assert choose_target_exit(
         adapter, CENTER, Direction.EAST, (1, 0),
     ) is Direction.NORTH
+    # Heading South, targeting the east arm: East steps onto it.
     assert choose_target_exit(
-        adapter, CENTER, Direction.EAST, (0, 1),
-    ) is Direction.WEST
+        adapter, CENTER, Direction.SOUTH, (2, 1),
+    ) is Direction.EAST
 
 
-def test_target_exit_may_reverse_where_greedy_would_not() -> None:
-    """Unlike the greedy rule, path navigation can double back -- a
-    chaser turning around toward its target is correct."""
+def test_target_exit_never_reverses_even_toward_the_target() -> None:
+    """The arcade's core ghost rule, and what stops the jitter.
+
+    Taking a raw shortest-path hop would double back the instant the
+    target sat behind, so a ghost twitched on the spot whenever the
+    player moved. The reverse is excluded; the ghost commits to the
+    corridor and comes back around.
+    """
     adapter = make_adapter(POCKET_4x1)
-    # At (1,0) heading East, target (0,0) is behind: greedy's no-reverse
-    # forbids West, but the shortest path home is exactly that reversal.
-    assert choose_exit(
+    # At (1,0) heading East with the target behind at (0,0): West is the
+    # reverse, so it keeps going East despite the target being back there.
+    assert choose_target_exit(
         adapter, (1, 0), Direction.EAST, (0, 0),
     ) is Direction.EAST
+
+
+def test_target_exit_beats_greedy_where_a_wall_blocks_the_way() -> None:
+    """True path distance, not straight-line: the ring's sealed centre
+    means the geometrically-closer exit is the topologically wrong one.
+    """
+    adapter = make_adapter(RING_3x3)
+    # At (1,0) heading East, target (1,2) is straight down past the
+    # sealed centre; the only routes are around the ring. East and West
+    # are both 3 hops... East is legal and West is the reverse, so it
+    # commits East rather than stalling.
     assert choose_target_exit(
-        adapter, (1, 0), Direction.EAST, (0, 0),
-    ) is Direction.WEST
+        adapter, (1, 0), Direction.EAST, (1, 2),
+    ) is Direction.EAST
 
 
 def test_target_exit_clamps_a_phantom_off_maze_target() -> None:

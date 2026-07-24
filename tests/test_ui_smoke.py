@@ -26,6 +26,15 @@ def _shell(tmp_path: Path) -> GameShell:
     return GameShell(make_test_config(highscore_filename=hs_path))
 
 
+def _clear_banners(shell: GameShell) -> None:
+    """Run out every queued interstitial so play can start ticking."""
+    for _ in range(50):
+        if shell.banner_text is None:
+            return
+        shell.advance(1000.0)
+    raise AssertionError("banners never cleared")
+
+
 def _screen(shell: GameShell) -> Screen:
     """Read the current screen as a plain Screen.
 
@@ -85,6 +94,14 @@ def test_start_pause_resume_and_return_to_menu(tmp_path: Path) -> None:
     assert shell.session.state.cheats.invincible
     shell.dispatch(Action.CHEAT_LIFE)
     assert shell.session.lives == 4
+
+    # A new game opens on its interstitials, which hold the simulation
+    # still until they expire.
+    assert shell.banner_text is not None
+    before = shell.session.state.tick_count
+    shell.advance(MS_PER_TICK * 2)
+    assert shell.session.state.tick_count == before, "frozen by the banner"
+    _clear_banners(shell)
 
     # Only PLAYING advances the simulation.
     before = shell.session.state.tick_count
