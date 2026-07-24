@@ -76,6 +76,45 @@ def test_respawn_lands_on_the_tick_the_pause_ends() -> None:
     assert state.tick_count == before + 1
 
 
+def test_catch_holds_still_before_the_dying_animation() -> None:
+    """Two beats: a caught hold (Pac-Man normal, ghosts on screen), then
+    the animation. ``is_caught_hold`` splits the frozen pause so the UI
+    can show each beat."""
+    ghost = Ghost(GhostPersonality.BLINKY, (2, 0), Direction.WEST, (4, 0),
+                  mode=GhostMode.CHASE)
+    state = make_state(
+        CORRIDOR_1x5, player=(1, 0), ghosts=[ghost], pacgums={(0, 0)},
+        ghost_spawns=CORRIDOR_SPAWNS,
+    )
+    state.caught_pause_ticks = 5
+    state.death_pause_ticks = 15   # 5 hold + 10 animation
+    state.player_direction = Direction.EAST
+    update_game_state(state)       # the fatal tick
+    assert state.death_anim_ticks == 10
+
+    phases = []
+    for _ in range(state.death_pause_ticks):
+        phases.append(state.is_caught_hold)
+        update_game_state(state)
+    assert phases[:5] == [True] * 5       # hold first
+    assert phases[5:] == [False] * 10     # then the animation
+    assert state.dying_ticks == 0
+    assert state.player_cell == state.level_data.player_spawn
+
+
+def test_zero_caught_pause_is_all_animation() -> None:
+    """The tests' default: no hold, the whole pause animates (old
+    behaviour), so is_caught_hold is never True."""
+    state = _fatal_state(PAUSE)  # caught_pause_ticks defaults to 0
+    update_game_state(state)
+    assert state.death_anim_ticks == PAUSE
+    seen_hold = False
+    for _ in range(PAUSE):
+        seen_hold = seen_hold or state.is_caught_hold
+        update_game_state(state)
+    assert not seen_hold
+
+
 def test_last_life_skips_the_pause_and_ends_the_game() -> None:
     """Game over is immediate -- there is nothing to respawn into."""
     state = _fatal_state(PAUSE, lives=1)
@@ -92,3 +131,55 @@ def test_pellets_survive_the_death_pause() -> None:
     for _ in range(PAUSE):
         update_game_state(state)
     assert state.pacgum_cells == pellets
+
+
+# -- Eating a ghost: the arcade's beat on the catch ---------------------
+
+def _catch_state(pause: int):  # type: ignore[no-untyped-def]
+    """A frightened ghost about to be eaten, with ``pause`` eat ticks."""
+    ghost = Ghost(GhostPersonality.BLINKY, (2, 0), Direction.WEST, (4, 0),
+                  mode=GhostMode.FRIGHTENED)
+    state = make_state(
+        CORRIDOR_1x5, player=(1, 0), ghosts=[ghost], pacgums={(0, 0)},
+        ghost_spawns=CORRIDOR_SPAWNS,
+        config=make_test_config(points_per_ghost=200),
+    )
+    state.eat_pause_ticks = pause
+    state.player_direction = Direction.EAST
+    return state
+
+
+def test_zero_eat_pause_keeps_play_uninterrupted() -> None:
+    """The default the rest of the suite relies on."""
+    state = _catch_state(pause=0)
+    update_game_state(state)
+    assert state.score == 200
+    assert state.eaten_ticks == 0
+
+
+def test_eating_a_ghost_freezes_play_and_records_the_value() -> None:
+    state = _catch_state(PAUSE)
+    update_game_state(state)
+    assert state.score == 200  # scored immediately
+    assert state.eaten_ticks == PAUSE
+    assert state.last_eat_score == 200  # what the UI shows...
+    assert state.last_eat_cell == (1, 0)  # ...and where
+
+    frozen = state.tick_count
+    for _ in range(PAUSE - 1):
+        update_game_state(state)
+    assert state.tick_count == frozen  # nothing moved
+
+
+def test_play_resumes_where_it_left_off_after_the_catch() -> None:
+    """Unlike a death, nothing is sent back to spawn."""
+    state = _catch_state(PAUSE)
+    update_game_state(state)
+    where = state.player_cell
+    for _ in range(PAUSE):
+        update_game_state(state)
+    assert state.eaten_ticks == 0
+    assert state.player_cell == where  # no respawn
+    before = state.tick_count
+    update_game_state(state)
+    assert state.tick_count == before + 1

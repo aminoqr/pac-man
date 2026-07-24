@@ -281,8 +281,10 @@ def test_x10_ghosts_pass_through_each_other() -> None:
     )
     state.player_direction = Direction.EAST  # parked against the wall
     update_game_state(state)
-    # Both CHASE the player (east) and land on the same tile -- ghosts
-    # never interact with each other, so they simply overlap.
-    assert one.cell == two.cell == (3, 0)  # co-located, no interaction
+    # Both face West with the player behind them to the East; a ghost may
+    # not reverse, so in a one-wide tube they commit West rather than
+    # turning around. They stay identical and share a tile -- which is
+    # the point here: ghosts never interact with each other.
+    assert one.cell == two.cell == (1, 0)  # co-located, no interaction
     assert state.lives == 3
     assert one.mode is GhostMode.CHASE and two.mode is GhostMode.CHASE
