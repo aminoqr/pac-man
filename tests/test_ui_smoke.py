@@ -257,3 +257,32 @@ def test_queued_turn_is_drawn_only_while_an_input_is_pending() -> None:
 
     state.buffer_input(Direction.EAST)  # same as facing -> not a turn
     assert intent_pixels() == 0
+
+
+def test_instructions_page_draws_its_own_dark_diagram() -> None:
+    """The How-to-Play page is a self-contained keyboard diagram on a
+    near-black page (not the busy menu artwork), with the movement keys
+    in Pac-Man yellow so the controls stay legible. Rendered to a bare
+    buffer: assert it filled its own dark background and stamped the
+    movement accent, all within bounds."""
+    from pacman.ui import app as appmod
+
+    w, h = 960, 700
+    app = appmod.MlxApp.__new__(appmod.MlxApp)
+    app.width, app.height = w, h
+    app.size_line = w * 4
+    app.buffer = memoryview(bytearray(w * h * 4))
+    app.ui = max(2, h // 260)
+    app.sprites = {}
+    app._sprite_runs = {}
+    app._death_frame_count = None
+
+    app._draw_instructions()  # must not raise or write out of bounds
+
+    data = bytes(app.buffer)
+    bg = bytes((appmod.INSTRUCT_BG[2], appmod.INSTRUCT_BG[1],
+                appmod.INSTRUCT_BG[0], 255))
+    assert data.count(bg) > w * h // 2  # most of the page is its dark bg
+    move = bytes((appmod.MOVE_ACCENT[2], appmod.MOVE_ACCENT[1],
+                  appmod.MOVE_ACCENT[0], 255))
+    assert data.count(move) > 0  # movement keycaps were stamped

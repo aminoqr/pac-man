@@ -34,7 +34,8 @@ from pacman.game.engine import GameState
 from pacman.maze.adapter import Direction
 from pacman.ui import font
 from pacman.ui.shell import (
-    INSTRUCTIONS_LINES,
+    INSTRUCTION_CHEATS,
+    INSTRUCTION_RULES,
     MAIN_MENU_ITEMS,
     PAUSE_MENU_ITEMS,
     Action,
@@ -98,6 +99,25 @@ GHOST_COLORS = {
     GhostPersonality.PINKY: (255, 150, 200),
     GhostPersonality.INKY: (60, 220, 255),
     GhostPersonality.CLYDE: (255, 160, 40),
+}
+
+# -- "How to play" page palette ------------------------------------------
+# This screen gets its own dark, high-contrast page (not the busy menu
+# artwork) so every control reads cleanly. Keys are drawn as bevelled
+# caps: movement keys glow Pac-Man yellow, secondary keys arcade blue,
+# cheat keys the intent green -- the same colour language as in-game.
+INSTRUCT_BG = (8, 8, 20)          # blacker than the game background
+INSTRUCT_HEADING = (120, 200, 255)  # section labels
+KEY_SHADOW = (2, 2, 8)            # drop shadow under a keycap
+KEY_FACE = (30, 32, 60)           # dark keycap face
+KEY_FACE_HI = (52, 56, 96)        # top bevel highlight of a keycap
+MOVE_ACCENT = PLAYER              # movement keys wear Pac-Man yellow
+KEY_ACCENT = (90, 120, 230)       # secondary keys (P / ESC) arcade blue
+CHEAT_ACCENT = INTENT             # cheat keys share the intent green
+# Which sprite stands in for each rule icon on the How-to-Play page.
+RULE_ICON_SPRITES = {
+    "ghost": ["ghost_blinky_east_1", "ghost_blinky_east", "ghost_blinky"],
+    "pacman": ["pacman_east_1", "pacman_east", "full_pacman", "pacman"],
 }
 
 # X11 keysyms -> navigational Action (see shell.Action). Printable keys
@@ -512,13 +532,17 @@ class MlxApp:
 
     def _draw_menu_screen(self) -> None:
         """Background, frame and credit shared by every non-game screen."""
+        # The How-to-Play page gets its own dark, self-contained layout
+        # (a keyboard diagram) rather than text over the busy artwork.
+        if self.shell.screen is Screen.INSTRUCTIONS:
+            self._has_art = False
+            self._draw_instructions()
+            return
         self._has_art = self._draw_background()
         if not self._has_art:
             self._fill(BACKGROUND)
         if self.shell.screen is Screen.MAIN_MENU:
             self._draw_main_menu()
-        elif self.shell.screen is Screen.INSTRUCTIONS:
-            self._draw_info_page("HOW TO PLAY", INSTRUCTIONS_LINES)
         else:
             self._draw_info_page("HIGH SCORES",
                                  self.shell.highscore_lines())
@@ -601,7 +625,7 @@ class MlxApp:
             y += font.text_height(self.ui) + self.ui * 2
 
     def _draw_info_page(self, title: str, lines: tuple[str, ...]) -> None:
-        """A titled page of centered lines (instructions / highscores)."""
+        """A titled page of centered lines (highscores)."""
         title_scale = self.ui * 2
         y = self.height // 10
         self._text_center(y, title, PLAYER, title_scale, True)
@@ -612,6 +636,209 @@ class MlxApp:
         self._text_center(self.height - self.ui * 20,
                           "PRESS ENTER OR ESC TO GO BACK", DIM, self.ui,
                           True)
+
+    # -- "How to play" page ----------------------------------------------
+
+    def _keycap(self, x: int, y: int, w: int, h: int,
+                accent: tuple[int, int, int], glyph: str = "",
+                arrow: Direction | None = None, scale: int = 1) -> None:
+        """One bevelled keyboard cap with a glowing accent rim.
+
+        A drop shadow, an ``accent`` rim, a dark face and a top bevel
+        line give it depth; the content is either a centred ``glyph`` or
+        a rendered ``arrow`` (one of the four directions), both in
+        ``accent`` so the live controls pop against the dark page.
+        """
+        r = max(3, min(w, h) // 5)
+        edge = max(2, min(w, h) // 14)
+        self._round_rect(x + edge, y + edge, w, h, r, KEY_SHADOW)
+        self._round_rect(x, y, w, h, r, accent)
+        fw, fh, fr = w - 2 * edge, h - 2 * edge, max(2, r - edge)
+        self._round_rect(x + edge, y + edge, fw, fh, fr, KEY_FACE)
+        self._rect(x + edge + fr, y + edge * 2, fw - 2 * fr,
+                   max(2, h // 12), KEY_FACE_HI)
+        cx, cy = x + w // 2, y + h // 2
+        if arrow is not None:
+            a = max(4, min(w, h) // 4)
+            self._arrow(cx + arrow.dx * (a // 2), cy + arrow.dy * (a // 2),
+                        arrow, a, accent)
+        elif glyph:
+            self._text(cx - font.text_width(glyph, scale) // 2,
+                       cy - font.text_height(scale) // 2, glyph, accent,
+                       scale)
+
+    def _key_cluster(self, center_x: int, top: int, k: int, gap: int,
+                     accent: tuple[int, int, int], letters: str = "") -> None:
+        """A four-key inverted-T cluster (arrow keys, or a W/A/S/D set).
+
+        ``letters`` (top, left, down, right) picks lettered caps; empty
+        draws directional arrows instead. Both share the classic layout
+        so the two options read as the same shape.
+        """
+        step = k + gap
+        # (col offset, row offset) for up, left, down, right.
+        slots = ((0, 0), (-1, 1), (0, 1), (1, 1))
+        arrows = (Direction.NORTH, Direction.WEST,
+                  Direction.SOUTH, Direction.EAST)
+        for index, (dc, dr) in enumerate(slots):
+            x = center_x + dc * step - k // 2
+            y = top + dr * step
+            if letters:
+                self._keycap(x, y, k, k, accent, glyph=letters[index],
+                             scale=max(2, self.ui * 2))
+            else:
+                self._keycap(x, y, k, k, accent, arrow=arrows[index])
+
+    def _labelled_key(self, center_x: int, top: int, w: int, h: int,
+                      label: str, caption: str,
+                      accent: tuple[int, int, int]) -> None:
+        """A single cap centred on ``center_x`` with a caption beneath it."""
+        self._keycap(center_x - w // 2, top, w, h, accent, glyph=label,
+                     scale=max(2, self.ui * 2))
+        cap_scale = max(1, self.ui)
+        self._text(center_x - font.text_width(caption, cap_scale) // 2,
+                   top + h + self.ui * 2, caption, DIM, cap_scale)
+
+    def _draw_instructions(self) -> None:
+        """The How-to-Play page: a keyboard diagram over a dark page.
+
+        Deliberately not the menu artwork -- a near-black page keeps the
+        controls legible. Everything is centred and sized from ``self.ui``
+        so it fills any window the same way.
+        """
+        self._fill(INSTRUCT_BG)
+        s = self.ui
+        cx = self.width // 2
+        k = font.text_height(s * 2) + s * 8   # keycap edge
+
+        # Title + accent underline.
+        title_scale = s * 3
+        y = max(s * 6, self.height // 20)
+        self._text_center(y, "HOW TO PLAY", PLAYER, title_scale, True)
+        y += font.text_height(title_scale) + s * 3
+        dw = font.text_width("HOW TO PLAY", title_scale) + s * 24
+        self._rect(cx - dw // 2, y, dw, max(2, s), KEY_ACCENT)
+        y += s * 9
+
+        # -- MOVE: arrow cluster  OR  W/A/S/D cluster --------------------
+        self._section_label(cx, y, "MOVE")
+        y += font.text_height(s) + s * 5
+        gap = max(3, s * 2)
+        span = (k + gap) * 3          # a cluster's full width
+        left_cx = cx - span // 2 - k
+        right_cx = cx + span // 2 + k
+        self._key_cluster(left_cx, y, k, gap, MOVE_ACCENT)
+        self._key_cluster(right_cx, y, k, gap, MOVE_ACCENT, letters="WASD")
+        mid = y + (2 * k + gap) // 2
+        self._text(cx - font.text_width("OR", s * 2) // 2,
+                   mid - font.text_height(s * 2) // 2, "OR", TEXT, s * 2)
+        y += 2 * k + gap + s * 8
+
+        # -- PAUSE / BACK ------------------------------------------------
+        wide = k * 2
+        row_gap = s * 12
+        group = wide + row_gap + wide
+        self._labelled_key(cx - group // 2 + wide // 2, y, wide, k,
+                           "P", "PAUSE", KEY_ACCENT)
+        self._labelled_key(cx + group // 2 - wide // 2, y, wide, k,
+                           "ESC", "BACK", KEY_ACCENT)
+        y += k + font.text_height(s) + s * 10
+
+        # -- CHEATS ------------------------------------------------------
+        self._section_label(cx, y, "CHEATS - FOR REVIEWERS")
+        y += font.text_height(s) + s * 5
+        self._draw_cheat_row(cx, y, k)
+        y += k + font.text_height(s) + s * 10
+
+        # -- GOAL legend + a decorative chase strip ----------------------
+        legend_bottom = self._draw_rule_legend(cx, y, k)
+        footer_y = self.height - s * 5 - font.text_height(s)
+        # Centre the chase strip in whatever space is left below the
+        # legend so the bottom never feels either crammed or hollow.
+        chase_top = max(legend_bottom + s * 4,
+                        (legend_bottom + footer_y - k) // 2)
+        chase_top = min(chase_top, footer_y - k - s * 4)
+        self._draw_chase_strip(cx, chase_top, k)
+        self._text_center(footer_y, "PRESS ENTER OR ESC TO GO BACK",
+                          DIM, s, True)
+
+    def _section_label(self, center_x: int, y: int, text: str) -> None:
+        """A small arcade-blue heading centred over a section."""
+        self._text(center_x - font.text_width(text, self.ui) // 2, y,
+                   text, INSTRUCT_HEADING, self.ui, True)
+
+    def _draw_cheat_row(self, center_x: int, top: int, k: int) -> None:
+        """The F1-F5 caps in a row, each with its caption beneath it.
+
+        The pitch is stretched to the widest caption so the labels sit
+        cleanly under their own key instead of colliding.
+        """
+        s = self.ui
+        cap_scale = max(1, s - 1)
+        widest = max(font.text_width(c, cap_scale) for _, c in
+                     INSTRUCTION_CHEATS)
+        step = max(k + s * 6, widest + s * 4)
+        start = center_x - (step * len(INSTRUCTION_CHEATS)) // 2 + step // 2
+        for index, (key, caption) in enumerate(INSTRUCTION_CHEATS):
+            kx = start + index * step
+            self._keycap(kx - k // 2, top, k, k, CHEAT_ACCENT, glyph=key,
+                         scale=max(2, s * 2))
+            self._text(kx - font.text_width(caption, cap_scale) // 2,
+                       top + k + s * 2, caption, DIM, cap_scale)
+
+    def _draw_rule_legend(self, center_x: int, top: int, k: int) -> int:
+        """The goal/rules lines, each stamped with its icon; returns the
+        y just past the last line so the caller can balance the space
+        below it."""
+        s = self.ui
+        icon = int(k * 0.8)
+        scale = max(2, s)
+        line_h = max(icon, font.text_height(scale)) + s * 4
+        gap = s * 5
+        widest = max(font.text_width(text, scale) for _, text in
+                     INSTRUCTION_RULES)
+        left = center_x - (icon + gap + widest) // 2
+        y = top
+        for kind, text in INSTRUCTION_RULES:
+            self._draw_rule_icon(kind, left, y, icon)
+            self._text(left + icon + gap,
+                       y + (icon - font.text_height(scale)) // 2,
+                       text, TEXT, scale, True)
+            y += line_h
+        return y
+
+    def _draw_rule_icon(self, kind: str, x: int, y: int, size: int) -> None:
+        """Draw the little icon that opens a rule line."""
+        cx, cy = x + size // 2, y + size // 2
+        if kind == "pellet":
+            self._disc_color(cx, cy, max(2, size // 6), PELLET)
+            return
+        if kind == "super":
+            self._disc_color(cx, cy, max(3, size // 3), PELLET)
+            return
+        names = RULE_ICON_SPRITES.get(kind, [])
+        name = self._first_loaded(names)
+        if name is None or not self._blit_sprite_px(name, x, y, size):
+            color = (GHOST_COLORS[GhostPersonality.BLINKY]
+                     if kind == "ghost" else PLAYER)
+            self._disc_color(cx, cy, size // 3, color)
+
+    def _draw_chase_strip(self, center_x: int, top: int, size: int) -> None:
+        """Pac-Man leading the four ghosts -- the classic attract motif."""
+        gap = size + self.ui * 6
+        actors = [
+            self._first_loaded(["pacman_east_1", "pacman_east",
+                                "full_pacman", "pacman"]),
+        ]
+        for personality in GhostPersonality:
+            name = personality.name.lower()
+            actors.append(self._first_loaded(
+                [f"ghost_{name}_east_1", f"ghost_{name}_east",
+                 f"ghost_{name}"]))
+        start = center_x - (gap * (len(actors) - 1)) // 2 - size // 2
+        for index, sprite in enumerate(actors):
+            if sprite is not None:
+                self._blit_sprite_px(sprite, start + index * gap, top, size)
 
     # -- In-game HUD and overlays ----------------------------------------
 
@@ -790,10 +1017,28 @@ class MlxApp:
         self._disc(x1, y1, radius)
 
     def _disc(self, cx: int, cy: int, radius: int) -> None:
-        """Fill a solid circle (rounds a wall joint or end)."""
+        """Fill a solid wall-coloured circle (rounds a wall joint or end)."""
+        self._disc_color(cx, cy, radius, WALL)
+
+    def _disc_color(self, cx: int, cy: int, radius: int,
+                    color: tuple[int, int, int]) -> None:
+        """Fill a solid circle of ``color`` centred on (cx, cy)."""
         for dy in range(-radius, radius + 1):
             dx = int((radius * radius - dy * dy) ** 0.5)
-            self._rect(cx - dx, cy + dy, 2 * dx + 1, 1, WALL)
+            self._rect(cx - dx, cy + dy, 2 * dx + 1, 1, color)
+
+    def _round_rect(self, x: int, y: int, w: int, h: int, radius: int,
+                    color: tuple[int, int, int]) -> None:
+        """Fill a rectangle with rounded corners (a cross plus 4 discs)."""
+        r = max(0, min(radius, w // 2, h // 2))
+        if r == 0:
+            self._rect(x, y, w, h, color)
+            return
+        self._rect(x + r, y, w - 2 * r, h, color)
+        self._rect(x, y + r, w, h - 2 * r, color)
+        for cx, cy in ((x + r, y + r), (x + w - 1 - r, y + r),
+                       (x + r, y + h - 1 - r), (x + w - 1 - r, y + h - 1 - r)):
+            self._disc_color(cx, cy, r, color)
 
     def _draw_dynamic(self, state: GameState) -> None:
         """Draw pellets (fixed) and the smoothly-moving ghosts + player.

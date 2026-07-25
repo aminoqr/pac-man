@@ -75,19 +75,27 @@ GAME_START_MS = 1500.0
 MAIN_MENU_ITEMS = ("Start Game", "View Highscores", "Instructions", "Exit")
 PAUSE_MENU_ITEMS = ("Resume", "Return to Main Menu")
 
-INSTRUCTIONS_LINES = (
-    "Eat every pac-gum to clear a level. Clear all levels to win.",
-    "Super pac-gums (the 4 corners) turn ghosts blue and edible.",
-    "A ghost's touch costs a life; you respawn at the center.",
-    "",
-    "Move:  Arrow keys  or  W A S D",
-    "Pause: P  or  Esc",
-    "",
-    "Cheats (for reviewers):",
-    "  F1 invincibility   F2 freeze ghosts   F3 extra life",
-    "  F4 speed boost     F5 skip level",
-    "",
-    "Press Esc or Enter to return to the menu.",
+# The How-to-Play page is drawn as a diagram, not a wall of text: the
+# renderer owns the keyboard art, and pulls its wording from the two
+# tables below so the copy stays here in the platform-neutral shell.
+#
+# Each rule is (icon, text); the icon key tells the renderer which sprite
+# to stamp beside the line (a pac-gum, a super pac-gum, or a ghost).
+INSTRUCTION_RULES = (
+    ("pellet", "Eat every pac-gum to clear the level."),
+    ("super", "Super pac-gums turn the ghosts blue and edible."),
+    ("ghost", "A ghost's touch costs a life -- you respawn at center."),
+    ("pacman", "Clear every level to win the game."),
+)
+
+# Cheat keys and their short captions (reviewer aids, subject VI.5),
+# drawn under each F-key cap.
+INSTRUCTION_CHEATS = (
+    ("F1", "INVINCIBLE"),
+    ("F2", "FREEZE"),
+    ("F3", "+1 LIFE"),
+    ("F4", "SPEED"),
+    ("F5", "SKIP LEVEL"),
 )
 
 
