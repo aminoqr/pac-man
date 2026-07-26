@@ -61,7 +61,9 @@ def main(argv: list[str]) -> int:
     degrades to the ASCII preview. MazeAdapterError is the only
     exception the maze layer may raise (REFERENCE.md §5.5) and MLX
     errors stay inside run_game -- no traceback may ever reach the
-    player (subject III.1).
+    player (subject III.1). Ctrl+C (``KeyboardInterrupt``) is caught
+    here and at the ``__main__`` gate, printing a clean line and
+    returning 130 instead of a stack dump.
     """
     if len(argv) != 2:
         print(f"Usage: {argv[0]} <config.json>", file=sys.stderr)
@@ -80,6 +82,11 @@ def main(argv: list[str]) -> int:
     except MazeAdapterError as exc:
         print(f"Could not generate the maze: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        # Ctrl+C during the windowed loop: treat as a clean quit, not a
+        # crash. Exit 130 is the Unix convention for SIGINT.
+        print("\nInterrupted.", file=sys.stderr)
+        return 130
     if exit_code != 0:
         # No window (headless/driver failure): degrade, don't die.
         return print_level_preview(config)
@@ -90,4 +97,11 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.WARNING, format="%(levelname)s: %(message)s",
     )
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except KeyboardInterrupt:
+        # Covers Ctrl+C during config load / ASCII preview / anything
+        # outside the run_game try above -- never a traceback
+        # (subject III.1).
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
