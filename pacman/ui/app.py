@@ -31,6 +31,7 @@ from mlx import Mlx
 from pacman.ai.ghost import Ghost, GhostMode, GhostPersonality
 from pacman.config.loader import Config
 from pacman.game.engine import GameState
+from pacman.highscore.store import TOP_N, HighscoreEntry
 from pacman.maze.adapter import Direction
 from pacman.ui import font
 from pacman.ui.shell import (
@@ -114,6 +115,14 @@ KEY_FACE_HI = (52, 56, 96)        # top bevel highlight of a keycap
 MOVE_ACCENT = PLAYER              # movement keys wear Pac-Man yellow
 KEY_ACCENT = (90, 120, 230)       # secondary keys (P / ESC) arcade blue
 CHEAT_ACCENT = INTENT             # cheat keys share the intent green
+# Rank accents on the High-Scores page, first place down. Deliberately
+# the How-to-Play page's own three accents rather than gold/silver/
+# bronze, so both info pages speak one colour language.
+RANK_ACCENTS = (MOVE_ACCENT, KEY_ACCENT, CHEAT_ACCENT)
+# Ranks past the podium: clearly subordinate, but still bright enough to
+# read against the near-black page (the keycap face itself is far too
+# dark for a rim and a numeral).
+RANK_PLAIN = (112, 118, 165)
 # Which sprite stands in for each rule icon on the How-to-Play page.
 RULE_ICON_SPRITES = {
     "ghost": ["ghost_blinky_east_1", "ghost_blinky_east", "ghost_blinky"],
@@ -532,20 +541,21 @@ class MlxApp:
 
     def _draw_menu_screen(self) -> None:
         """Background, frame and credit shared by every non-game screen."""
-        # The How-to-Play page gets its own dark, self-contained layout
-        # (a keyboard diagram) rather than text over the busy artwork.
+        # How-to-Play and High Scores each get the same dark,
+        # self-contained page layout rather than text over the busy
+        # artwork, which the small print was getting lost in.
         if self.shell.screen is Screen.INSTRUCTIONS:
             self._has_art = False
             self._draw_instructions()
             return
+        if self.shell.screen is Screen.HIGHSCORES:
+            self._has_art = False
+            self._draw_highscores()
+            return
         self._has_art = self._draw_background()
         if not self._has_art:
             self._fill(BACKGROUND)
-        if self.shell.screen is Screen.MAIN_MENU:
-            self._draw_main_menu()
-        else:
-            self._draw_info_page("HIGH SCORES",
-                                 self.shell.highscore_lines())
+        self._draw_main_menu()
         # The artwork carries its own title and credit; drawing ours on
         # top of it would only double up.
         if not self._has_art:
@@ -624,18 +634,116 @@ class MlxApp:
             self._text_center(y, line, TEXT, self.ui, True)
             y += font.text_height(self.ui) + self.ui * 2
 
-    def _draw_info_page(self, title: str, lines: tuple[str, ...]) -> None:
-        """A titled page of centered lines (highscores)."""
-        title_scale = self.ui * 2
-        y = self.height // 10
+    # -- Shared info-page furniture --------------------------------------
+
+    def _draw_page_title(self, title: str) -> int:
+        """Centred page title over its accent underline; returns the y
+        just below it.
+
+        Shared by How-to-Play and High Scores so both pages open exactly
+        the same way.
+        """
+        s = self.ui
+        title_scale = s * 3
+        y = max(s * 6, self.height // 20)
         self._text_center(y, title, PLAYER, title_scale, True)
-        y += font.text_height(title_scale) + self.ui * 8
-        for line in lines:
-            self._text_center(y, line, TEXT, self.ui, True)
-            y += font.text_height(self.ui) + self.ui * 3
-        self._text_center(self.height - self.ui * 20,
-                          "PRESS ENTER OR ESC TO GO BACK", DIM, self.ui,
-                          True)
+        y += font.text_height(title_scale) + s * 3
+        dw = font.text_width(title, title_scale) + s * 24
+        self._rect(self.width // 2 - dw // 2, y, dw, max(2, s), KEY_ACCENT)
+        return y + s * 9
+
+    def _draw_page_footer(self) -> int:
+        """The shared "go back" line; returns its y so callers can
+        balance whatever sits above it."""
+        s = self.ui
+        y = self.height - s * 5 - font.text_height(s)
+        self._text_center(y, "PRESS ENTER OR ESC TO GO BACK", DIM, s, True)
+        return y
+
+    # -- High scores page --------------------------------------------------
+
+    def _draw_highscores(self) -> None:
+        """The leaderboard, in the How-to-Play page's theme.
+
+        Same furniture as the controls page -- near-black backdrop,
+        yellow title over an accent underline, an arcade-blue section
+        label, the chase strip and the same footer -- so the two info
+        screens read as one family. Each row reuses the keycap shape as
+        a rank badge, which is what ties the table to the keyboard
+        diagram visually.
+        """
+        self._fill(INSTRUCT_BG)
+        s = self.ui
+        cx = self.width // 2
+        y = self._draw_page_title("HIGH SCORES")
+
+        self._section_label(cx, y, f"TOP {TOP_N} - ALL TIME")
+        y += font.text_height(s) + s * 6
+
+        footer_y = self._draw_page_footer()
+        strip = font.text_height(s * 2) + s * 6
+        chase_top = footer_y - strip - s * 5
+
+        entries = self.shell.highscores.entries
+        if entries:
+            self._draw_score_table(cx, y, chase_top - s * 4, entries)
+        else:
+            self._text_center((y + chase_top) // 2,
+                              "NO HIGH SCORES YET - BE THE FIRST!",
+                              TEXT, max(2, s), True)
+        self._draw_chase_strip(cx, chase_top, strip)
+
+    def _draw_score_table(self, center_x: int, top: int, bottom: int,
+                          entries: list[HighscoreEntry]) -> None:
+        """Rank badge + name + right-aligned score, one row per entry.
+
+        The row pitch is divided out of the space actually left between
+        the header and the chase strip, so a full table of ten never
+        runs into the footer on a short window and a table of two does
+        not float in the middle of nowhere.
+        """
+        s = self.ui
+        scale = max(2, s)
+        rank_scale = max(2, s * 2)
+        ranks = [str(index + 1) for index in range(len(entries))]
+        height = font.text_height(rank_scale) + s * 3
+        # Every badge takes the width of the widest rank, so a two-digit
+        # "10" is not squeezed out of its cap and the name column still
+        # starts on one line.
+        width = max(height,
+                    max(font.text_width(r, rank_scale) for r in ranks) + s * 6)
+        pitch = max(height + s * 2,
+                    min(height + s * 8, (bottom - top) // len(entries)))
+
+        # One shared column grid: the widest name and the widest score
+        # decide it, so the numbers line up in a true right-aligned
+        # column instead of drifting with each name's length.
+        gap, col_gap = s * 6, s * 12
+        name_w = max(font.text_width(e.name.upper(), scale) for e in entries)
+        score_w = max(font.text_width(str(e.score), scale) for e in entries)
+        left = center_x - (width + gap + name_w + col_gap + score_w) // 2
+        name_x = left + width + gap
+        score_right = name_x + name_w + col_gap + score_w
+        # Nudge the block down off the header, but only a little: a full
+        # ten rows then sit centred in their space, while a table of two
+        # still flows from the top of the page instead of floating in
+        # the middle of it.
+        block = pitch * (len(entries) - 1) + height
+        top += min(max(0, (bottom - top - block) // 2), s * 10)
+
+        for index, entry in enumerate(entries):
+            accent = (RANK_ACCENTS[index] if index < len(RANK_ACCENTS)
+                      else RANK_PLAIN)
+            y = top + index * pitch
+            self._keycap(left, y, width, height, accent,
+                         glyph=ranks[index], scale=rank_scale)
+            text_y = y + (height - font.text_height(scale)) // 2
+            self._text(name_x, text_y, entry.name.upper(),
+                       TEXT if index < len(RANK_ACCENTS) else DIM,
+                       scale, True)
+            score = str(entry.score)
+            self._text(score_right - font.text_width(score, scale), text_y,
+                       score, accent, scale, True)
 
     # -- "How to play" page ----------------------------------------------
 
@@ -711,14 +819,7 @@ class MlxApp:
         cx = self.width // 2
         k = font.text_height(s * 2) + s * 8   # keycap edge
 
-        # Title + accent underline.
-        title_scale = s * 3
-        y = max(s * 6, self.height // 20)
-        self._text_center(y, "HOW TO PLAY", PLAYER, title_scale, True)
-        y += font.text_height(title_scale) + s * 3
-        dw = font.text_width("HOW TO PLAY", title_scale) + s * 24
-        self._rect(cx - dw // 2, y, dw, max(2, s), KEY_ACCENT)
-        y += s * 9
+        y = self._draw_page_title("HOW TO PLAY")
 
         # -- MOVE: arrow cluster  OR  W/A/S/D cluster --------------------
         self._section_label(cx, y, "MOVE")
@@ -752,15 +853,13 @@ class MlxApp:
 
         # -- GOAL legend + a decorative chase strip ----------------------
         legend_bottom = self._draw_rule_legend(cx, y, k)
-        footer_y = self.height - s * 5 - font.text_height(s)
+        footer_y = self._draw_page_footer()
         # Centre the chase strip in whatever space is left below the
         # legend so the bottom never feels either crammed or hollow.
         chase_top = max(legend_bottom + s * 4,
                         (legend_bottom + footer_y - k) // 2)
         chase_top = min(chase_top, footer_y - k - s * 4)
         self._draw_chase_strip(cx, chase_top, k)
-        self._text_center(footer_y, "PRESS ENTER OR ESC TO GO BACK",
-                          DIM, s, True)
 
     def _section_label(self, center_x: int, y: int, text: str) -> None:
         """A small arcade-blue heading centred over a section."""
@@ -861,9 +960,13 @@ class MlxApp:
                 f"LEVEL {self.shell.session.level_number}    "
                 f"TIME {state.seconds_remaining}")
         y = top + (self.height - top - font.text_height(self.ui)) // 2
-        self._text(self.board_x + self.ui * 2, y, text, TEXT, self.ui)
+        # Anchored to the window, not the board: the board is a centred
+        # square, so both strings were being squeezed into its span --
+        # colliding over the time readout on a wide screen -- while the
+        # margins either side of it sat empty.
+        self._text(self.ui * 2, y, text, TEXT, self.ui)
         hint = "P PAUSE   F1-F5 CHEATS"
-        self._text(self.width - self.board_x - self.ui * 2
+        self._text(self.width - self.ui * 2
                    - font.text_width(hint, max(1, self.ui - 1)),
                    y, hint, DIM, max(1, self.ui - 1))
 
@@ -1337,6 +1440,11 @@ def run_game(config: Config) -> int:
     front (MLX would otherwise segfault), and any other MLX/Vulkan
     failure is caught and reported as one clean line with a nonzero exit
     code, so the caller can fall back to the textual preview.
+
+    ``KeyboardInterrupt`` (Ctrl+C) is deliberately *not* swallowed here:
+    it is a ``BaseException``, so the bare ``except Exception`` below
+    lets it propagate to the entry point, which prints a clean
+    "Interrupted." line and exits 130.
     """
     if not has_display():
         logger.warning("No graphics display detected; textual fallback.")
