@@ -1,4 +1,4 @@
-*This project has been created as part of the 42 curriculum by aasylbye.*
+*This project has been created as part of the 42 curriculum by dalamrew & aasylbye.*
 
 # 42 Pac-Man — Ghosts! More ghosts!
 
@@ -8,6 +8,28 @@ package, classical pathfinding (BFS / DFS / A\*), a persistent top-10
 highscore table, a full menu-driven UI, and a cheat mode for reviewers.
 The simulation is headless and deterministic; the 42 MiniLibX (MLX) is
 only the window on top of it.
+
+---
+
+## Team & work split
+
+The work is divided into two interleaved, roughly equal halves so **each
+of us owns both algorithms and UI** (not a backend/frontend silo); at the
+evaluation each of us leads the discussion on the half we own (both know
+the whole project). Full breakdown — files, concepts to defend, likely
+questions, and the interfaces between the halves — is in
+[`project-management/work-split.md`](project-management/work-split.md).
+
+| Lead | Area | Owns |
+|---|---|---|
+| **aasylbye** | Search, targeting & pixels | `maze/adapter.py` (+ `Direction`), `pathfinding/*` (BFS/DFS/A\*), `ai/targeting.py` + `intersection.py`, `ui/app.py` (MLX), `packaging/` |
+| **dalamrew** | Ticks, modes & screens | `config/loader.py`, `game/engine.py` + `session.py`, `ai/ghost.py` + `wave.py`, `ui/shell.py` + `font.py`, `highscore/store.py`, `pac-man.py` + `Makefile` |
+
+The two halves meet at three interfaces: the **ghost decision API**
+(targeting / intersection / pathfinding → consumed by the engine), the
+**`GameSession`/`GameState` read API** (consumed by the MLX view), and the
+**`Direction` enum + adapter vocabulary** (consumed by engine *and*
+renderer).
 
 ---
 
@@ -238,8 +260,9 @@ with their own AI state.
 
 The `project-management/` directory holds the evidence trail: the
 milestone timeline, progress tracked against `PLAN.md`, design decisions
-and their rationale, a risk analysis, the acceptance-test plan, and the
-blocking points encountered. Work proceeded milestone by milestone —
+and their rationale, a risk analysis, the acceptance-test plan, the
+blocking points encountered, and the [work split](project-management/work-split.md)
+between the two of us. Work proceeded milestone by milestone —
 (1) wheel integration & maze parsing, (2) ghost AI, (3) pathfinding,
 (4) game loop/collisions/scoring, (5) UI/highscores/packaging — each
 leaving the repository runnable and lint-clean.
