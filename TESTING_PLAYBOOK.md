@@ -4,7 +4,7 @@
 > grid movement, collision resolution, and wall-encoding layers.
 > Companions: [PLAN.md](PLAN.md) (progress tracker) · [REFERENCE.md](REFERENCE.md) (theory).
 > No test code lives here — this is the *specification* your pytest suite
-> must satisfy. Every table row below is meant to become exactly one test.
+> must satisfy. Every table row below is meant to become exactly one test
 
 **Conventions used throughout (identical to the whole project):**
 positions are `(x, y)` tuples; arrays are indexed `grid[y][x]`; the y-axis
@@ -496,4 +496,4 @@ individually correct.
 *End of playbook. Suggested build order: §2 (encoding) → §3 (movement) →
 §5 (swap collision, while §3 is fresh) → §4 (state machine) → §6 →  §7.
 Each section's tests are the acceptance gate for the matching PLAN.md
-milestone items.*
+milestone items*
