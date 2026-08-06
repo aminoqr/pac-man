@@ -1,4 +1,4 @@
-*This project has been created as part of the 42 curriculum by dalamrew & aasylbye.*
+*This project has been created as part of the 42 curriculum by aasylbye & dalamrew.*
 
 # 42 Pac-Man - Ghosts! More ghosts!
 
