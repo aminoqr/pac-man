@@ -1,5 +1,3 @@
-*This project has been created as part of the 42 curriculum by dalamrew & aasylbye.*
-
 # 42 Pac-Man - Ghosts! More ghosts!
 
 A complete, playable Pac-Man in Python: four ghosts with distinct arcade
