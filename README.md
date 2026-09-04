@@ -14,9 +14,7 @@ only the window on top of it.
 The work is divided into two interleaved, roughly equal halves so **each
 of us owns both algorithms and UI** (not a backend/frontend silo); at the
 evaluation each of us leads the discussion on the half we own (both know
-the whole project). Full breakdown — files, concepts to defend, likely
-questions, and the interfaces between the halves — is in
-[`project-management/work-split.md`](project-management/work-split.md).
+the whole project).
 
 | Lead | Area | Owns |
 |---|---|---|
@@ -94,9 +92,8 @@ Other useful targets: `make lint`, `make lint-strict`, `make test`,
 ## Resources
 
 - **Assigned maze generator:** the "A-Maze-ing" wheel
-  (`mazegenerator-2.1.0-py3-none-any.whl`, shipped inside
-  `mazegenerator-00001.zip`). Used **as-is**, never vendored or
-  modified — it is re-installed at peer review (subject V.4).
+  (`mazegenerator-2.1.0-py3-none-any.whl`). Used **as-is**, never vendored
+  or modified — it is re-installed at peer review (subject V.4).
 - **Graphics:** the 42 **MiniLibX** (`mlx_CLXV`) — the official
   Python-wrapped MLX (`from mlx import Mlx`). The board is rendered by
   writing pixels into an off-screen image buffer (MLX has no shape
@@ -256,11 +253,7 @@ with their own AI state.
 
 ## Project Management
 
-The `project-management/` directory holds the evidence trail: the
-milestone timeline, progress tracked against `PLAN.md`, design decisions
-and their rationale, a risk analysis, the acceptance-test plan, the
-blocking points encountered, and the [work split](project-management/work-split.md)
-between the two of us. Work proceeded milestone by milestone —
+Work proceeded milestone by milestone, tracked in `PLAN.md` —
 (1) wheel integration & maze parsing, (2) ghost AI, (3) pathfinding,
 (4) game loop/collisions/scoring, (5) UI/highscores/packaging — each
 leaving the repository runnable and lint-clean.

@@ -4,9 +4,9 @@ Two kinds of test live here (TESTING_PLAYBOOK.md §1):
     * hand-built micro-mazes (fixtures below) for behavioral assertions
       about wall bits, walkability, and the corner/center fallback policy;
     * live calls into the installed `mazegenerator` wheel to characterize
-      facts CLAUDE.md's trap list already documents from reading the
-      source -- pinning them here means a future wheel swap fails loudly
-      in this suite instead of silently in the game.
+      facts REFERENCE.md §5.4's trap list already documents from reading
+      the source -- pinning them here means a future wheel swap fails
+      loudly in this suite instead of silently in the game.
 """
 
 import pytest
@@ -204,8 +204,8 @@ def test_oversized_requests_are_not_clamped() -> None:
 
 # --- Live wheel characterization tests ------------------------------------
 # These call the real installed `mazegenerator` wheel; they pin the facts
-# CLAUDE.md's trap list documents from reading the source, so a future
-# wheel swap that changes behavior fails here first.
+# REFERENCE.md §5.4's trap list documents from reading the source, so a
+# future wheel swap that changes behavior fails here first.
 #
 # test_wheel_maze_entry_exit_tuple_order_is_x_y is the one place outside
 # pacman/maze/adapter.py that imports `mazegenerator` directly: its whole
@@ -217,8 +217,9 @@ def test_oversized_requests_are_not_clamped() -> None:
 def test_wheel_maze_entry_exit_tuple_order_is_x_y() -> None:
     """PLAN.md Milestone 1.3 item 36: confirm empirically that
     maze_entry/maze_exit are (x, y) -- the README's claimed (row, col) is
-    wrong (CLAUDE.md's trap list #4). Uses an asymmetric maze (REFERENCE.md
-    §5.4's own recipe) so a transposed tuple order would be caught."""
+    wrong (REFERENCE.md §5.4's trap list). Uses an asymmetric maze
+    (REFERENCE.md §5.4's own recipe) so a transposed tuple order would be
+    caught."""
     from mazegenerator import MazeGenerator
 
     width, height = 9, 5

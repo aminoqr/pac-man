@@ -31,8 +31,8 @@ from mazegenerator import MazeGenerator
 
 logger = logging.getLogger(__name__)
 
-# Verified against the shipped wheel source (CLAUDE.md's trap list): the
-# "42" logo is 7 cells wide x 5 cells tall and its insertion is skipped
+# Verified against the shipped wheel source (REFERENCE.md §5.4's trap list):
+# the "42" logo is 7 cells wide x 5 cells tall and its insertion is skipped
 # (silently, no exception) whenever width < 14 or height < 10 -- these
 # thresholds are asymmetric, not a flat "14 per side".
 MIN_MAZE_WIDTH = 14

@@ -23,8 +23,7 @@ true graph distance -- the Milestone 3 upgrade REFERENCE.md §3.7
 anticipates -- keeps the four personalities (they still pursue distinct
 *target tiles*) while making the ghosts actually roam and hunt.
 ``choose_exit`` remains the documented greedy primitive (still used by
-its unit tests and as the total-safety fallback); see the
-project-management design-decisions note.
+its unit tests and as the total-safety fallback).
 """
 
 from random import Random

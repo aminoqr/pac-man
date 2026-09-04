@@ -1,7 +1,7 @@
 # 42 Pacman — Project Plan & Progress Tracker
 
 > Subject: **"Pacman — Ghosts! More ghosts!"** (v1.5) · Python 3.10+ · flake8 + mypy clean · MiniLibX (mlx_CLXV) graphics
-> Companion study guide: [REFERENCE.md](REFERENCE.md) (theory) · [CLAUDE.md](CLAUDE.md) (current, wheel-verified facts)
+> Companion study guide: [REFERENCE.md](REFERENCE.md) (theory, including wheel-verified facts and the documented-vs-actual trap list in §5.4)
 >
 > How to use this file: work milestone by milestone. Tick a box only when the
 > acceptance criteria at the end of each milestone pass. Every milestone leaves
@@ -16,9 +16,9 @@ maze through the provided wheel, and can print/parse that maze correctly.*
 
 ### 1.1 Repository & tooling
 
-- [*] Create the project layout: a package directory (e.g. `pacman/`) with submodules planned for `config`, `maze`, `entities`, `ai`, `pathfinding`, `game`, `ui`, `highscore`, plus a `tests/` directory and a `project-management/` directory (required by Chapter VIII).
+- [*] Create the project layout: a package directory (e.g. `pacman/`) with submodules planned for `config`, `maze`, `entities`, `ai`, `pathfinding`, `game`, `ui`, `highscore`, plus a `tests/` directory.
 - [*] Write the `Makefile` with the mandatory rules: `install`, `run`, `debug` (via `pdb`), `clean`, `lint` (`flake8 .` and `mypy . --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs`), and optional `lint-strict` (`mypy . --strict`).
-- [*] Create a virtual environment; `make install` installs the wheel plus dev tools (`flake8`, `mypy`, `pytest`). The wheel now ships inside `mazegenerator-00001.zip` (the old loose `mazegenerator-2.1.0-py3-none-any.whl` is gone), and `requirements.txt` still points at that old path — extract the zip into the repo root (`unzip mazegenerator-00001.zip`) before `make install`/`pip install -r requirements.txt` will work.
+- [*] Create a virtual environment; `make install` installs the wheel plus dev tools (`flake8`, `mypy`, `pytest`) via `requirements.txt`, which points at the vendored `./mazegenerator-2.1.0-py3-none-any.whl` at the repo root.
 - [*] Add `.gitignore` covering `__pycache__/`, `.mypy_cache/`, `.venv/`, editor artifacts.
 - [*] Confirm every function you write from now on carries type hints and a PEP 257 docstring (subject III.1 makes this graded, not optional).
 
@@ -32,8 +32,8 @@ maze through the provided wheel, and can print/parse that maze correctly.*
 
 ### 1.3 Wheel integration & maze parsing (subject V.4)
 
-- [*] Inspect the wheel *as a consumer* (see REFERENCE.md §5): list its contents, read `METADATA`, and probe the public API in a REPL — do **not** modify or vendor its code; it will be re-installed at peer review. CLAUDE.md already has this extraction done plus a documented-vs-actual trap list from reading the source directly — start there and confirm with your own REPL/test pass rather than re-investigating blind.
-- [*] Wall-bit encoding is confirmed unchanged (bit 0 = North, bit 1 = East, bit 2 = South, bit 3 = West). The coordinate order returned by `maze_entry` / `maze_exit` is now source-verified as `(x, y)` — the README's claimed `(row, col)` is wrong (see CLAUDE.md's trap list, itself pointing back to REFERENCE.md §5.4's methodology). Still write the confirming test; just don't treat the order as an open question.
+- [*] Inspect the wheel *as a consumer* (see REFERENCE.md §5): list its contents, read `METADATA`, and probe the public API in a REPL — do **not** modify or vendor its code; it will be re-installed at peer review. REFERENCE.md §5.4 already has this extraction done plus a documented-vs-actual trap list from reading the source directly — start there and confirm with your own REPL/test pass rather than re-investigating blind.
+- [*] Wall-bit encoding is confirmed unchanged (bit 0 = North, bit 1 = East, bit 2 = South, bit 3 = West). The coordinate order returned by `maze_entry` / `maze_exit` is now source-verified as `(x, y)` — the README's claimed `(row, col)` is wrong (see REFERENCE.md §5.4's trap list and methodology). Still write the confirming test; just don't treat the order as an open question.
 - [*] Write a **maze adapter** class: it calls `MazeGenerator(size=(w, h), perfect=False, entry_cell=..., exit_cell=..., seed=...)`, catches any generator failure cleanly, and converts the raw wall-encoded `list[list[int]]` into your own internal grid model (never let the rest of the game touch the wheel directly).
 - [*] Clamp configured level width/height against the verified, *asymmetric* minimum for the "42" logo insert: width ≥ 14 **and** height ≥ 10 independently (not a flat "≥14 per side") — do this clamping (§1.2) before ever calling the generator.
 - [*] Implement the core spatial query: `can_move(cell, direction) -> bool` using bitmask tests, and `neighbors(cell) -> list[cell]`.
@@ -172,10 +172,9 @@ VII–IX).*
 ### 5.4 Documentation & project management (subject VIII–IX)
 
 - [*] `README.md` with the mandatory italic first line (login `aasylbye`) and all sections: Description, Instructions, Resources (incl. how AI was used and for what), Configuration, Highscore, Maze Generation, Implementation, General Software Architecture, Project Management — in English (verified present).
-- [*] `project-management/` directory: timeline, progress tracking vs plan, design decisions, risk analysis, acceptance test plan, blocking points — all six authored under `project-management/`.
 - [*] Final pass: `make lint` and `make lint-strict` clean, docstrings everywhere, test suite green (209), and a defense dry-run (fresh tree -> `make install` -> `make lint`/`lint-strict`/`test`/`run`/`package`) all passing.
 
 ### Milestone 5 acceptance criteria
 
-- [*] A stranger can clone, install, play, and read their way to understanding the project — fresh-tree `make install` -> `make run` verified; README + project-management/ cover play, config, architecture, and how AI was used.
+- [*] A stranger can clone, install, play, and read their way to understanding the project — fresh-tree `make install` -> `make run` verified; README covers play, config, architecture, and how AI was used.
 - [~] The deployed platform build launches and is fully functional — the local build launches and is fully functional (verified: windowed run + extracted-bundle run); the **itch.io deployment itself is the pending manual upload** (see 5.3).
